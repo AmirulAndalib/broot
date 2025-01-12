@@ -1,13 +1,21 @@
 use {
-    git2::{self, Repository, Status},
-    ahash::AHashMap,
-    std::{
-        path::{Path, PathBuf},
+    git2::{
+        self,
+        Repository,
+        Status,
+    },
+    rustc_hash::FxHashMap,
+    std::path::{
+        Path,
+        PathBuf,
     },
 };
 
 const INTERESTING: Status = Status::from_bits_truncate(
-    Status::WT_NEW.bits() | Status::CONFLICTED.bits() | Status::WT_MODIFIED.bits(),
+    Status::WT_NEW.bits()
+    | Status::CONFLICTED.bits()
+    | Status::WT_MODIFIED.bits()
+    | Status::IGNORED.bits()
 );
 
 /// A git status
@@ -17,7 +25,10 @@ pub struct LineGitStatus {
 }
 
 impl LineGitStatus {
-    pub fn from(repo: &Repository, relative_path: &Path) -> Option<LineGitStatus> {
+    pub fn from(
+        repo: &Repository,
+        relative_path: &Path,
+    ) -> Option<LineGitStatus> {
         repo.status_file(relative_path)
             .ok()
             .map(|status| LineGitStatus { status })
@@ -31,12 +42,12 @@ impl LineGitStatus {
 /// looks at all the statuses of the repo and build a map path->status
 /// which can then be efficiently queried
 pub struct LineStatusComputer {
-    interesting_statuses: AHashMap<PathBuf, Status>,
+    interesting_statuses: FxHashMap<PathBuf, Status>,
 }
 impl LineStatusComputer {
     pub fn from(repo: Repository) -> Option<Self> {
         let workdir = repo.workdir()?;
-        let mut interesting_statuses = AHashMap::default();
+        let mut interesting_statuses = FxHashMap::default();
         let statuses = repo.statuses(None).ok()?;
         for entry in statuses.iter() {
             let status = entry.status();
@@ -47,19 +58,26 @@ impl LineStatusComputer {
                 }
             }
         }
-        Some(Self { interesting_statuses })
+        Some(Self {
+            interesting_statuses,
+        })
     }
-    pub fn line_status(&self, path: &Path) -> Option<LineGitStatus> {
+    pub fn line_status(
+        &self,
+        path: &Path,
+    ) -> Option<LineGitStatus> {
         self.interesting_statuses
             .get(path)
             .map(|&status| LineGitStatus { status })
     }
-    pub fn is_interesting(&self, path: &Path) -> bool {
+    pub fn is_interesting(
+        &self,
+        path: &Path,
+    ) -> bool {
         self.interesting_statuses.contains_key(path)
     }
 }
 
-///
 #[derive(Debug, Clone)]
 pub struct TreeGitStatus {
     pub current_branch_name: Option<String>,
@@ -74,15 +92,13 @@ impl TreeGitStatus {
             .ok()
             .and_then(|head| head.shorthand().map(String::from));
         let stats = match repo.diff_index_to_workdir(None, None) {
-            Ok(diff) => {
-                match diff.stats() {
-                    Ok(stats) => stats,
-                    Err(e) => {
-                        debug!("get stats failed : {:?}", e);
-                        return None;
-                    }
+            Ok(diff) => match diff.stats() {
+                Ok(stats) => stats,
+                Err(e) => {
+                    debug!("get stats failed : {:?}", e);
+                    return None;
                 }
-            }
+            },
             Err(e) => {
                 debug!("get diff failed : {:?}", e);
                 return None;

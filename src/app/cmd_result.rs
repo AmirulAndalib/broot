@@ -3,6 +3,7 @@ use {
     crate::{
         browser::BrowserState,
         command::Sequence,
+        display::LayoutInstruction,
         errors::TreeBuildError,
         launchable::Launchable,
         verb::Internal,
@@ -36,12 +37,14 @@ pub enum CmdResult {
         validate_purpose: bool,
         panel_ref: PanelReference,
     },
+    ChangeLayout(LayoutInstruction),
     DisplayError(String),
     ExecuteSequence {
         sequence: Sequence,
     },
     HandleInApp(Internal), // command must be handled at the app level
     Keep,
+    Message(String),
     Launch(Box<Launchable>),
     NewPanel {
         state: Box<dyn PanelState>,
@@ -64,7 +67,7 @@ impl CmdResult {
     pub fn verb_not_found(text: &str) -> CmdResult {
         CmdResult::DisplayError(format!("verb not found: {:?}", &text))
     }
-    pub fn from_optional_state(
+    pub fn from_optional_browser_state(
         os: Result<BrowserState, TreeBuildError>,
         message: Option<&'static str>,
         in_new_panel: bool,
@@ -109,6 +112,7 @@ impl fmt::Debug for CmdResult {
             "{}",
             match self {
                 CmdResult::ApplyOnPanel { .. } => "ApplyOnPanel",
+                CmdResult::ChangeLayout(_) => "ChangeLayout",
                 CmdResult::ClosePanel {
                     validate_purpose: false, ..
                 } => "CancelPanel",
@@ -118,6 +122,7 @@ impl fmt::Debug for CmdResult {
                 CmdResult::DisplayError(_) => "DisplayError",
                 CmdResult::ExecuteSequence{ .. } => "ExecuteSequence",
                 CmdResult::Keep => "Keep",
+                CmdResult::Message { .. } => "Message",
                 CmdResult::Launch(_) => "Launch",
                 CmdResult::NewState { .. } => "NewState",
                 CmdResult::NewPanel { .. } => "NewPanel",

@@ -5,7 +5,9 @@ use {
         errors::ConfError,
         path::PathAnchor,
     },
-    crokey::crossterm::event::KeyEvent,
+    crokey::{
+        KeyCombination,
+    },
     std::{
         cmp::PartialEq,
         path::PathBuf,
@@ -19,14 +21,17 @@ use {
 /// Verbs are the engines of broot commands, and apply
 /// - to the selected file (if user-defined, then must contain {file}, {parent} or {directory})
 /// - to the current app state
+///
 /// There are two types of verbs executions:
 /// - external programs or commands (cd, mkdir, user defined commands, etc.)
 /// - internal behaviors (focusing a path, going back, showing the help, etc.)
+///
 /// Some verbs are builtins, some other ones are created by configuration.
+///
 /// Both builtins and configured vers can be internal or external based.
 ///
 /// Verbs can't be cloned. Two verbs are equal if they have the same address
-/// in memory.
+///   in memory.
 #[derive(Debug)]
 pub struct Verb {
 
@@ -40,7 +45,7 @@ pub struct Verb {
     pub names: Vec<String>,
 
     /// key shortcuts
-    pub keys: Vec<KeyEvent>,
+    pub keys: Vec<KeyCombination>,
 
     /// how the input must be checked and interpreted
     /// Can be empty if the verb is only called with a key shortcut.
@@ -93,7 +98,9 @@ impl Verb {
         let invocation_parser = invocation_str.map(InvocationParser::new).transpose()?;
         let mut names = Vec::new();
         if let Some(ref invocation_parser) = invocation_parser {
-            names.push(invocation_parser.name().to_string());
+            let name = invocation_parser.name().to_string();
+            check_verb_name(&name)?;
+            names.push(name);
         }
         let (
             needs_selection,
@@ -128,11 +135,11 @@ impl Verb {
             panels: Vec::new(),
         })
     }
-    pub fn with_key(&mut self, key: KeyEvent) -> &mut Self {
+    pub fn with_key(&mut self, key: KeyCombination) -> &mut Self {
         self.keys.push(key);
         self
     }
-    pub fn add_keys(&mut self, keys: Vec<KeyEvent>) {
+    pub fn add_keys(&mut self, keys: Vec<KeyCombination>) {
         for key in keys {
             self.keys.push(key);
         }
@@ -140,6 +147,11 @@ impl Verb {
     pub fn no_doc(&mut self) -> &mut Self {
         self.show_in_doc = false;
         self
+    }
+    pub fn with_name(&mut self, name: &str) -> Result<&mut Self, ConfError> {
+        check_verb_name(name)?;
+        self.names.insert(0, name.to_string());
+        Ok(self)
     }
     pub fn with_description(&mut self, description: &str) -> &mut Self {
         self.description = VerbDescription::from_text(description.to_string());
@@ -218,8 +230,9 @@ impl Verb {
         sel_info: SelInfo<'_>,
         app_state: &AppState,
         invocation: &VerbInvocation,
+        con: &AppContext,
     ) -> String {
-        let name = self.names.get(0).unwrap_or(&invocation.name);
+        let name = self.names.first().unwrap_or(&invocation.name);
 
         // there's one special case: the ̀ :focus` internal. As long
         // as no other internal takes args, and no other verb can
@@ -234,25 +247,25 @@ impl Verb {
                     sel_info,
                     invocation,
                     app_state,
+                    con,
                 );
             }
         }
 
         let builder = || {
             ExecutionStringBuilder::with_invocation(
-                &self.invocation_parser,
+                self.invocation_parser.as_ref(),
                 sel_info,
                 app_state,
                 invocation.args.as_ref(),
             )
         };
         if let VerbExecution::Sequence(seq_ex) = &self.execution {
-            let exec_desc = builder().shell_exec_string(
-                &ExecPattern::from_string(&seq_ex.sequence.raw)
-            );
-            format!("Hit *enter* to **{}**: `{}`", name, &exec_desc)
+            // We can't determine before execution what will be the arguments, except
+            // for the first item of the sequence. It's cleaner to just not try expand it
+            format!("Hit *enter* to **{}**: `{}`", name, seq_ex.sequence.raw)
         } else if let VerbExecution::External(external_exec) = &self.execution {
-            let exec_desc = builder().shell_exec_string(&external_exec.exec_pattern);
+            let exec_desc = builder().shell_exec_string(&external_exec.exec_pattern, con);
             format!("Hit *enter* to **{}**: `{}`", name, &exec_desc)
         } else if self.description.code {
             format!("Hit *enter* to **{}**: `{}`", name, &self.description.content)
@@ -296,5 +309,13 @@ impl Verb {
             extension
                 .map_or(false, |ext| self.file_extensions.iter().any(|ve| ve == ext))
         }
+    }
+}
+
+pub fn check_verb_name(name: &str) -> Result<(), ConfError> {
+    if regex_is_match!(r"^([@,#~&'%$\dù_-]+|[\w][\w_@,#~&'%$\dù_-]*)+$", name) {
+        Ok(())
+    } else {
+        Err(ConfError::InvalidVerbName{ name: name.to_string() })
     }
 }

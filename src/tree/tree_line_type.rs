@@ -1,5 +1,5 @@
 use {
-    ahash::AHashSet,
+    rustc_hash::FxHashSet,
     std::{
         fs,
         io,
@@ -35,13 +35,17 @@ pub fn read_link(path: &Path) -> io::Result<PathBuf> {
 
 impl TreeLineType {
 
+    pub fn is_pruning(&self) -> bool {
+        matches!(self, Self::Pruning)
+    }
+
     fn resolve(direct_target: &Path) -> io::Result<Self> {
         let mut final_target = direct_target.to_path_buf();
         let mut final_metadata = fs::symlink_metadata(&final_target)?;
         let mut final_ft = final_metadata.file_type();
         let mut final_is_dir = final_ft.is_dir();
         let mut link_chain_length = 0;
-        let mut visited = AHashSet::default();
+        let mut visited = FxHashSet::default();
         while final_ft.is_symlink() {
             final_target = read_link(&final_target)?;
             if visited.contains(&final_target) {
@@ -74,7 +78,7 @@ impl TreeLineType {
         })
     }
 
-    pub fn new(path: &Path, ft: &fs::FileType) -> Self {
+    pub fn new(path: &Path, ft: fs::FileType) -> Self {
         if ft.is_dir() {
             Self::Dir
         } else if ft.is_symlink() {

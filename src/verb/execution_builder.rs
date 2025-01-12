@@ -2,9 +2,10 @@ use {
     super::*,
     crate::{
         app::*,
+        command::*,
         path,
     },
-    ahash::AHashMap,
+    rustc_hash::FxHashMap,
     regex::Captures,
     std::path::{Path, PathBuf},
 };
@@ -23,7 +24,7 @@ pub struct ExecutionStringBuilder<'b> {
     other_file: Option<&'b PathBuf>,
 
     /// parsed arguments
-    invocation_values: Option<AHashMap<String, String>>,
+    invocation_values: Option<FxHashMap<String, String>>,
 
     /// whether to keep groups which can't be solved or remove them
     keep_groups: bool,
@@ -46,7 +47,7 @@ impl<'b> ExecutionStringBuilder<'b> {
         }
     }
     pub fn with_invocation(
-        invocation_parser: &Option<InvocationParser>,
+        invocation_parser: Option<&InvocationParser>,
         sel_info: SelInfo<'b>,
         app_state: &'b AppState,
         invocation_args: Option<&String>,
@@ -94,9 +95,13 @@ impl<'b> ExecutionStringBuilder<'b> {
             }
         }
     }
-    fn get_raw_capture_replacement(&self, ec: &Captures<'_>) -> Option<String> {
+    fn get_raw_capture_replacement(
+        &self,
+        ec: &Captures<'_>,
+        con: &AppContext,
+    ) -> Option<String> {
         self.get_raw_replacement(|sel| {
-            self.get_raw_sel_capture_replacement(ec, sel)
+            self.get_raw_sel_capture_replacement(ec, sel, con)
         })
     }
     /// return the standard replacement (ie not one from the invocation)
@@ -104,10 +109,12 @@ impl<'b> ExecutionStringBuilder<'b> {
         &self,
         name: &str,
         sel: Option<Selection<'_>>,
+        con: &AppContext,
     ) -> Option<String> {
         debug!("repl name : {:?}", name);
         match name {
             "root" => Some(path_to_string(self.root)),
+            "initial-root" => Some(path_to_string(&con.initial_root)),
             "line" => sel.map(|s| s.line.to_string()),
             "file" => sel.map(|s| s.path)
                 .map(path_to_string),
@@ -168,6 +175,18 @@ impl<'b> ExecutionStringBuilder<'b> {
                         .map(|s| s.to_string())
                     }))
             }
+            "file-git-relative" => { // file path relative to git repo workdir
+                let sel = sel?;
+                let path = git2::Repository::discover(self.root).ok()
+                    .and_then(|repo| repo.workdir().map(path_to_string))
+                    .and_then(|gitroot| sel.path.strip_prefix(gitroot).ok())
+                    .filter(|p| {
+                        // it's empty when the file is both the tree root and the git root
+                        !p.as_os_str().is_empty()
+                    })
+                    .unwrap_or(sel.path);
+                Some(path_to_string(path))
+            }
             _ => None,
         }
     }
@@ -175,9 +194,10 @@ impl<'b> ExecutionStringBuilder<'b> {
         &self,
         ec: &Captures<'_>,
         sel: Option<Selection<'_>>,
+        con: &AppContext,
     ) -> Option<String> {
         let name = ec.get(1).unwrap().as_str();
-        self.get_raw_sel_name_standard_replacement(name, sel)
+        self.get_raw_sel_name_standard_replacement(name, sel, con)
             .or_else(||{
                 // it's not one of the standard group names, so we'll look
                 // into the ones provided by the invocation pattern
@@ -203,8 +223,12 @@ impl<'b> ExecutionStringBuilder<'b> {
             })
     }
     #[inline]
-    fn get_capture_replacement(&self, ec: &Captures<'_>) -> String {
-        self.get_raw_capture_replacement(ec)
+    fn get_capture_replacement(
+        &self,
+        ec: &Captures<'_>,
+        con: &AppContext,
+    ) -> String {
+        self.get_raw_capture_replacement(ec, con)
             .unwrap_or_else(||
                 if self.keep_groups { ec[0].to_string() } else { "".to_string() }
             )
@@ -213,8 +237,9 @@ impl<'b> ExecutionStringBuilder<'b> {
         &self,
         ec: &Captures<'_>,
         sel: Option<Selection<'_>>,
+        con: &AppContext,
     ) -> String {
-        self.get_raw_sel_capture_replacement(ec, sel)
+        self.get_raw_sel_capture_replacement(ec, sel, con)
             .unwrap_or_else(||
                 if self.keep_groups { ec[0].to_string() } else { "".to_string() }
             )
@@ -226,6 +251,7 @@ impl<'b> ExecutionStringBuilder<'b> {
     pub fn invocation_with_default(
         &self,
         verb_invocation: &VerbInvocation,
+        con: &AppContext,
     ) -> VerbInvocation {
         VerbInvocation {
             name: verb_invocation.name.clone(),
@@ -237,7 +263,7 @@ impl<'b> ExecutionStringBuilder<'b> {
                             .map(|default_name| default_name.as_str())
                             .and_then(|default_name|
                                 self.get_raw_replacement(|sel|
-                                    self.get_raw_sel_name_standard_replacement(default_name, sel)
+                                    self.get_raw_sel_name_standard_replacement(default_name, sel, con)
                                 )
                             )
                             .unwrap_or_default()
@@ -253,18 +279,75 @@ impl<'b> ExecutionStringBuilder<'b> {
             .one_sel()
             .map_or(self.root, |sel| sel.path)
     }
-
+    /// replace groups in a sequence
+    ///
+    /// Replacing escapes for the shell for externals, and without
+    /// escaping for internals.
+    ///
+    /// Note that this is *before* asking the (local or remote) panel
+    /// state the sequential execution of the different commands. In
+    /// this secondary execution, new replacements are expected too,
+    /// depending on the verbs.
+    pub fn sequence(
+        &self,
+        sequence: &Sequence,
+        verb_store: &VerbStore,
+        con: &AppContext,
+        panel_state_type: Option<PanelStateType>,
+    ) -> Sequence {
+        let mut inputs = Vec::new();
+        for input in sequence.raw.split(&sequence.separator) {
+            let raw_parts = CommandParts::from(input.to_string());
+            let (_, verb_invocation) = raw_parts.split();
+            let verb_is_external = verb_invocation
+                .and_then(|vi| {
+                    let command = Command::from_parts(vi, true);
+                    if let Command::VerbInvocate(invocation) = &command {
+                        let search = verb_store.search_prefix(&invocation.name, panel_state_type);
+                        if let PrefixSearchResult::Match(_, verb) = search {
+                            return Some(verb);
+                        }
+                    }
+                    None
+                })
+                .map_or(false, |verb| verb.get_internal().is_none());
+            let input = if verb_is_external {
+                self.shell_exec_string(&ExecPattern::from_string(input), con)
+            } else {
+                self.string(input, con)
+            };
+            inputs.push(input);
+        }
+        Sequence {
+            raw: inputs.join(&sequence.separator),
+            separator: sequence.separator.clone(),
+        }
+    }
+    /// build a raw string, without escapings
+    pub fn string(
+        &self,
+        pattern: &str,
+        con: &AppContext,
+    ) -> String {
+        GROUP
+            .replace_all(
+                pattern,
+                |ec: &Captures<'_>| self.get_capture_replacement(ec, con),
+            )
+            .to_string()
+    }
     /// build a path
     pub fn path(
         &self,
         pattern: &str,
+        con: &AppContext,
     ) -> PathBuf {
         path::path_from(
             self.base_dir(),
             path::PathAnchor::Unspecified,
             &GROUP.replace_all(
                 pattern,
-                |ec: &Captures<'_>| self.get_capture_replacement(ec),
+                |ec: &Captures<'_>| self.get_capture_replacement(ec, con),
             )
         )
     }
@@ -272,12 +355,13 @@ impl<'b> ExecutionStringBuilder<'b> {
     pub fn shell_exec_string(
         &self,
         exec_pattern: &ExecPattern,
+        con: &AppContext,
     ) -> String {
         exec_pattern
             .apply(&|s| {
                 GROUP.replace_all(
                     s,
-                    |ec: &Captures<'_>| self.get_capture_replacement(ec),
+                    |ec: &Captures<'_>| self.get_capture_replacement(ec, con),
                 ).to_string()
             })
             .fix_paths()
@@ -290,12 +374,13 @@ impl<'b> ExecutionStringBuilder<'b> {
         &self,
         exec_pattern: &ExecPattern,
         sel: Option<Selection<'_>>,
+        con: &AppContext,
     ) -> String {
         exec_pattern
             .apply(&|s| {
                 GROUP.replace_all(
                     s,
-                    |ec: &Captures<'_>| self.get_sel_capture_replacement(ec, sel),
+                    |ec: &Captures<'_>| self.get_sel_capture_replacement(ec, sel, con),
                 ).to_string()
             })
             .fix_paths()
@@ -306,12 +391,13 @@ impl<'b> ExecutionStringBuilder<'b> {
     pub fn exec_token(
         &self,
         exec_pattern: &ExecPattern,
+        con: &AppContext,
     ) -> Vec<String> {
         exec_pattern
             .apply(&|s| {
                 GROUP.replace_all(
                     s,
-                    |ec: &Captures<'_>| self.get_capture_replacement(ec),
+                    |ec: &Captures<'_>| self.get_capture_replacement(ec, con),
                 ).to_string()
             })
             .fix_paths()
@@ -323,12 +409,13 @@ impl<'b> ExecutionStringBuilder<'b> {
         &self,
         exec_pattern: &ExecPattern,
         sel: Option<Selection<'_>>,
+        con: &AppContext,
     ) -> Vec<String> {
         exec_pattern
             .apply(&|s| {
                 GROUP.replace_all(
                     s,
-                    |ec: &Captures<'_>| self.get_sel_capture_replacement(ec, sel),
+                    |ec: &Captures<'_>| self.get_sel_capture_replacement(ec, sel, con),
                 ).to_string()
             })
             .fix_paths()
@@ -380,13 +467,14 @@ mod execution_builder_test {
             SelInfo::One(sel),
             &app_state,
         );
-        let mut map = AHashMap::default();
+        let mut map = FxHashMap::default();
         for (k, v) in replacements {
             map.insert(k.to_owned(), v.to_owned());
         }
         builder.invocation_values = Some(map);
+        let con = AppContext::default();
         for exec_pattern in exec_patterns {
-            let exec_token = builder.exec_token(&exec_pattern);
+            let exec_token = builder.exec_token(&exec_pattern, &con);
             assert_eq!(exec_token, chk_exec_token);
         }
     }

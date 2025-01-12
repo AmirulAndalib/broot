@@ -1,7 +1,9 @@
 use {
-    crossbeam::channel::{self, bounded, select, Receiver},
     std::thread,
-    termimad::TimedEvent,
+    termimad::{
+        crossbeam::channel::{self, bounded, select, Receiver},
+        TimedEvent,
+    },
 };
 
 pub enum Either<A, B> {
@@ -58,7 +60,6 @@ impl Dam {
     /// after the event listener started again. In any case
     /// using try_compute should be preferred for immediate
     /// return to the ui thread.
-
     pub fn observer(&self) -> DamObserver {
         DamObserver::from(self)
     }

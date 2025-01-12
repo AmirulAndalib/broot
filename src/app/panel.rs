@@ -22,7 +22,7 @@ use {
     },
 };
 
-/// A colon on screen containing a stack of states, the top
+/// A column on screen containing a stack of states, the top
 /// one being visible
 pub struct Panel {
     pub id: PanelId,
@@ -31,6 +31,7 @@ pub struct Panel {
     status: Status,
     pub purpose: PanelPurpose,
     pub input: PanelInput,
+    pub last_raw_pattern: Option<String>,
 }
 
 impl Panel {
@@ -51,6 +52,7 @@ impl Panel {
             status,
             purpose: PanelPurpose::None,
             input,
+            last_raw_pattern: None,
         }
     }
 
@@ -71,6 +73,9 @@ impl Panel {
         app_state: &mut AppState,
         app_cmd_context: &'c AppCmdContext<'c>,
     ) -> Result<CmdResult, ProgramError> {
+        if let Command::PatternEdit { raw, .. } = cmd {
+            self.last_raw_pattern = Some(raw.clone());
+        }
         let state_idx = self.states.len() - 1;
         let cc = CmdContext {
             cmd,
@@ -160,7 +165,7 @@ impl Panel {
             let new_input = format!("{command_parts}");
             self.input.set_content(&new_input);
         }
-        self.mut_state().set_mode(initial_mode(con));
+        self.mut_state().set_mode(con.initial_mode());
     }
 
     pub fn set_input_content(&mut self, content: &str) {
@@ -197,7 +202,7 @@ impl Panel {
         &mut self,
         w: &mut W,
         disc: &DisplayContext,
-    ) -> Result<(), ProgramError> {
+    ) -> Result<Option<(u16, u16)>, ProgramError> {
         self.mut_state().display(w, disc)?;
         if disc.active || !WIDE_STATUS {
             self.write_status(w, disc.panel_skin, disc.screen)?;
@@ -214,8 +219,14 @@ impl Panel {
                 flags_display::write(w, &flags, disc.panel_skin)?;
             }
         }
-        self.input.display(w, disc.active, self.state().get_mode(), input_area, disc.panel_skin)?;
-        Ok(())
+        let cursor_pos = self.input.display(
+            w,
+            disc.active,
+            self.state().get_mode(),
+            input_area,
+            disc.panel_skin,
+        )?;
+        Ok(cursor_pos)
     }
 
     fn write_status(
@@ -275,4 +286,14 @@ impl Panel {
         Ok(())
     }
 
+    // /// return the last non empty pattern used in a previous state
+    // pub fn last_pattern(&self) -> Option<&InputPattern> {
+    //     for state in self.states.iter().rev().skip(1) {
+    //         let pattern = state.pattern();
+    //         if pattern.is_some() {
+    //             return Some(pattern);
+    //         }
+    //     }
+    //     None
+    // }
 }

@@ -78,15 +78,19 @@ If you want to know more about the exact pattern syntax, see [reference](../inpu
 
 When you search in broot in a very big directory on a slow disk, broot doesn't always look at all files. It stops when it found enough matches and then rates those matches.
 
-If you think there might be a better match, hidden deeper, you may require a *total search*, which is a search which look at *all* files. This is done using the `:total_search` verb, which may be triggered with the <kbd>Ctrl</kbd>-<kbd>S</kbd> key combination (you may redefine it, see [configuration](../conf_file/#keyboard-key)).
+If you think there might be a better match, hidden deeper, you may require a *total search*, which is a search which look at *all* files. This is done using the `:search_again` verb, which may be triggered with the <kbd>Ctrl</kbd><kbd>S</kbd> key combination (you may redefine it, see [configuration](../conf_file/#keyboard-key)).
 
 As for other searches, it's interrupted as soon as you type anything.
+
+# Search again
+
+If no filtering is active, hit <kbd>Ctrl</kbd><kbd>S</kbd> to bring back the last used filtering pattern.
 
 # Quitting broot
 
 Other than executing a command leaving broot, there are several ways to quit:
 
-* if the current root is selected, just hit `enter`
-* hit <kbd>ctrl</kbd>+<kbd>Q</kbd>
+* hit <kbd>ctrl</kbd><kbd>Q</kbd> or  <kbd>ctrl</kbd><kbd>C</kbd>
 * type `:q` or `space` `q` then `enter`
+* call any other verb whose action quits broot, for example `:print_path`
 

@@ -13,7 +13,6 @@ use {
         tree::TreeOptions,
     },
     std::{
-        fs,
         path::{Path, PathBuf},
     },
 };
@@ -46,13 +45,14 @@ pub fn new_state_on_path(
     con: &AppContext,
 ) -> CmdResult {
     let path = path::closest_dir(&path);
-    CmdResult::from_optional_state(
+    CmdResult::from_optional_browser_state(
         BrowserState::new(path, tree_options, screen, con, &Dam::unlimited()),
         None,
         false,
     )
 }
 
+#[allow(unused_mut)]
 pub fn new_panel_on_path(
     mut path: PathBuf,
     screen: Screen,
@@ -61,8 +61,10 @@ pub fn new_panel_on_path(
     con: &AppContext,
     direction: HDir,
 ) -> CmdResult {
+    #[cfg(not(windows))]
     // We try to canonicalize the path, mostly to resolve links
-    if let Ok(canonic) = fs::canonicalize(&path) {
+    // We don't do it on Windows due to issue #809
+    if let Ok(canonic) = std::fs::canonicalize(&path) {
         path = canonic;
         // If it can't be canonicalized, we'll let the panel state
         // deal with the original path
@@ -101,6 +103,7 @@ fn path_from_input(
     base_path: &Path, // either the selected path or the root path
     input_arg: Option<&String>,
     app_state: &AppState,
+    con: &AppContext,
 ) -> PathBuf {
     match (input_arg, internal_exec.arg.as_ref()) {
         (Some(input_arg), Some(verb_arg)) => {
@@ -112,12 +115,12 @@ fn path_from_input(
             // }
             // (or that input is useless)
             let path_builder = ExecutionStringBuilder::with_invocation(
-                &verb.invocation_parser,
+                verb.invocation_parser.as_ref(),
                 SelInfo::from_path(base_path),
                 app_state,
                 Some(input_arg),
             );
-            path_builder.path(verb_arg)
+            path_builder.path(verb_arg, con)
         }
         (Some(input_arg), None) => {
             // the verb defines nothing
@@ -135,12 +138,12 @@ fn path_from_input(
             // state's selection
             // (we assume a check before ensured it doesn't need an input)
             let path_builder = ExecutionStringBuilder::with_invocation(
-                &verb.invocation_parser,
+                verb.invocation_parser.as_ref(),
                 SelInfo::from_path(base_path),
                 app_state,
                 None,
             );
-            path_builder.path(verb_arg)
+            path_builder.path(verb_arg, con)
         }
         (None, None) => {
             // user only wants to open the selected path, either in the same panel or
@@ -156,6 +159,7 @@ pub fn get_status_markdown(
     sel_info: SelInfo<'_>,
     invocation: &VerbInvocation,
     app_state: &AppState,
+    con: &AppContext,
 ) -> String {
     let base_path = sel_info
         .one_path()
@@ -166,6 +170,7 @@ pub fn get_status_markdown(
         base_path,
         invocation.args.as_ref(),
         app_state,
+        con,
     );
     format!("Hit *enter* to focus `{}`", path.to_string_lossy())
 }
@@ -183,12 +188,6 @@ pub fn on_internal(
 ) -> CmdResult {
     let con = &cc.app.con;
     let screen = cc.app.screen;
-    info!(
-        "internal_focus.on_internal internal_exec={:?} input_invocation={:?} trygger_type={:?}",
-        internal_exec,
-        input_invocation,
-        trigger_type,
-    );
     let bang = input_invocation
             .map(|inv| inv.bang)
             .unwrap_or(internal_exec.bang);
@@ -202,6 +201,7 @@ pub fn on_internal(
                 selected_path,
                 input_arg,
                 app_state,
+                cc.app.con,
             );
             on_path(path, screen, tree_options, bang, con)
         }
@@ -210,10 +210,14 @@ pub fn on_internal(
             if let Some(arg) = &internal_exec.arg {
                 // the internal_execution specifies the path to use
                 // (it may come from a configured verb whose execution is
-                //  `:focus some/path`).
+                //  `:focus some/path` or `:focus {initial-root}̀).
                 // The given path may be relative hence the need for the
                 // state's selection
-                let path = path::path_from(selected_path, PathAnchor::Unspecified, arg);
+                let path_builder = ExecutionStringBuilder::without_invocation(
+                    SelInfo::from_path(selected_path),
+                    app_state,
+                );
+                let path = path_builder.path(arg, con);
                 let bang = input_invocation
                     .map(|inv| inv.bang)
                     .unwrap_or(internal_exec.bang);

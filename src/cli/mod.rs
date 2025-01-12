@@ -54,8 +54,9 @@ pub fn run() -> Result<Option<Launchable>, ProgramError> {
 
     if args.help {
         Printer::new(Args::command())
-            .with_max_width(140)
+            .with_max_width(110)
             .with("introduction", INTRO)
+            .with("options", clap_help::TEMPLATE_OPTIONS_MERGED_VALUE)
             .without("author")
             .print_help();
         must_quit = true;
@@ -158,13 +159,20 @@ pub fn run() -> Result<Option<Launchable>, ProgramError> {
         w.queue(EnableMouseCapture)?;
     }
     let r = app.run(&mut w, &mut context, &config);
+    w.flush()?;
     if context.capture_mouse {
         w.queue(DisableMouseCapture)?;
     }
     w.queue(cursor::Show)?;
     w.queue(LeaveAlternateScreen)?;
     w.flush()?;
+    clear_resources();
     r
+}
+
+fn clear_resources() {
+    info!("clearing resources");
+    crate::kitty::manager().lock().unwrap().delete_temp_files();
 }
 
 /// wait for user input, return `true` if they didn't answer 'n'

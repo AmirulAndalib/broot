@@ -9,7 +9,7 @@ use {
 
 /// Launch arguments
 #[derive(Debug, Parser)]
-#[command(author, about, version, disable_version_flag = true, disable_help_flag = true)]
+#[command(about, version, disable_version_flag = true, disable_help_flag = true)]
 pub struct Args {
 
     /// Print help information
@@ -128,6 +128,10 @@ pub struct Args {
     #[arg(short, long)]
     pub whale_spotting: bool,
 
+    /// No sort, no show hidden, no show git ignored
+    #[arg(short='W', long)]
+    pub no_whale_spotting: bool,
+
     /// Trim the root too and don't show a scrollbar
     #[arg(short='t', long)]
     pub trim_root: bool,
@@ -140,11 +144,15 @@ pub struct Args {
     #[arg(long, value_name = "path")]
     pub outcmd: Option<PathBuf>,
 
+    /// Optional path for verbs using `:write_output`
+    #[arg(long, value_name = "verb-output")]
+    pub verb_output: Option<PathBuf>,
+
     /// Semicolon separated commands to execute
     #[arg(short, long, value_name = "cmd")]
     pub cmd: Option<String>,
 
-    /// Whether to have styles and colors (default is usually OK)
+    /// Whether to have styles and colors
     #[arg(long, default_value="auto", value_name = "color")]
     pub color: TriBool,
 
@@ -156,7 +164,7 @@ pub struct Args {
     #[arg(long)]
     pub install: bool,
 
-    /// Where to write the produced cmd (if any)
+    /// Manually set installation state
     #[arg(long, value_name = "state")]
     pub set_install_state: Option<CliShellInstallState>,
 
