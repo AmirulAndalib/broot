@@ -17,7 +17,7 @@ pub struct MatchedString<'a> {
     pub align: Alignment,
 }
 
-impl<'a, 'w> MatchedString<'a> {
+impl<'a> MatchedString<'a> {
 
     pub fn new(
         name_match: Option<NameMatch>,
@@ -77,7 +77,7 @@ impl<'a, 'w> MatchedString<'a> {
         let mut width = self.width();
         for (idx, c) in self.string.char_indices() {
             if width <= max_width { break; }
-            break_idx = idx;
+            break_idx = idx + c.len_utf8();
             let char_width = c.width().unwrap_or(0);
             if char_width > width {
                 warn!("inconsistent char/str widths");
@@ -94,7 +94,7 @@ impl<'a, 'w> MatchedString<'a> {
         }
         removed_char_count
     }
-    pub fn queue_on<W>(&self, cw: &mut CropWriter<'w, W>) -> Result<(), termimad::Error>
+    pub fn queue_on<W>(&self, cw: &mut CropWriter<'_, W>) -> Result<(), termimad::Error>
     where
         W: std::io::Write,
     {

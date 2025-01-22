@@ -8,12 +8,11 @@ use {
         skin::PanelSkin,
         verb::*,
     },
-    crokey::key,
+    crokey::{key, KeyCombination},
     crokey::crossterm::{
         cursor,
         event::{
             Event,
-            KeyEvent,
             KeyModifiers,
             MouseButton,
             MouseEvent,
@@ -56,7 +55,7 @@ impl PanelInput {
         mode: Mode,
         mut area: Area,
         panel_skin: &PanelSkin,
-    ) -> Result<(), ProgramError> {
+    ) -> Result<Option<(u16, u16)>, ProgramError> {
         self.input_field.set_normal_style(panel_skin.styles.input.clone());
         self.input_field.set_focus(active && mode == Mode::Input);
         if mode == Mode::Command && active {
@@ -66,14 +65,14 @@ impl PanelInput {
             area.left += 1;
         }
         self.input_field.set_area(area);
-        self.input_field.display_on(w)?;
-        Ok(())
+        let cursor_pos = self.input_field.display_on(w)?;
+        Ok(cursor_pos)
     }
 
     /// consume the event to
     /// - maybe change the input
     /// - build a command
-    /// then redraw the input field
+    ///   then redraw the input field
     #[allow(clippy::too_many_arguments)]
     pub fn on_event(
         &mut self,
@@ -85,11 +84,17 @@ impl PanelInput {
         mode: Mode,
         panel_state_type: PanelStateType,
     ) -> Result<Command, ProgramError> {
-        let cmd = match timed_event.event {
-            Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }) => {
+        let cmd = match timed_event {
+            TimedEvent {
+                event: Event::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }),
+                ..
+            } => {
                 self.on_mouse(timed_event, kind, column, row)
             }
-            Event::Key(key) => {
+            TimedEvent {
+                key_combination: Some(key),
+                ..
+            } => {
                 self.on_key(timed_event, key, con, sel_info, app_state, mode, panel_state_type)
             }
             _ => Command::None,
@@ -171,10 +176,10 @@ impl PanelInput {
     /// should be added to the input
     fn enter_input_mode_with_key(
         &mut self,
-        key: KeyEvent,
+        key: KeyCombination,
         parts: &CommandParts,
     ) {
-        if let Some(c) = crokey::as_letter(key) {
+        if let Some(c) = key.as_letter() {
             let add = match c {
                 // '/' if !parts.raw_pattern.is_empty() => true,
                 ' ' if parts.verb_invocation.is_none() => true,
@@ -231,6 +236,7 @@ impl PanelInput {
         sel_info: SelInfo<'_>,
         raw: String,
         parts: CommandParts,
+        panel_state_type: Option<PanelStateType>,
     ) -> Command {
         let parts_before_cycle;
         let completable_parts = if let Some(s) = &self.input_before_cycle {
@@ -239,8 +245,7 @@ impl PanelInput {
         } else {
             &parts
         };
-        let completions = Completions::for_input(completable_parts, con, sel_info);
-        info!(" -> completions: {:?}", &completions);
+        let completions = Completions::for_input(completable_parts, con, sel_info, panel_state_type);
         let added = match completions {
             Completions::None => {
                 debug!("nothing to complete!");
@@ -276,12 +281,12 @@ impl PanelInput {
 
     fn find_key_verb<'c>(
         &mut self,
-        key: KeyEvent,
+        key: KeyCombination,
         con: &'c AppContext,
         sel_info: SelInfo<'_>,
         panel_state_type: PanelStateType,
     ) -> Option<&'c Verb> {
-        for verb in con.verb_store.verbs().iter() {
+        for verb in con.verb_store.verbs() {
             // note that there can be several verbs with the same key and
             // not all of them can apply
             if !verb.keys.contains(&key) {
@@ -295,7 +300,7 @@ impl PanelInput {
             }
             if !verb.file_extensions.is_empty() {
                 let extension = sel_info.extension();
-                if !extension.map_or(false, |ext| verb.file_extensions.iter().any(|ve| ve == ext)) {
+                if !extension.is_some_and(|ext| verb.file_extensions.iter().any(|ve| ve == ext)) {
                     continue;
                 }
             }
@@ -313,7 +318,7 @@ impl PanelInput {
         column: u16,
         row: u16,
     ) -> Command {
-        if self.input_field.apply_timed_event(timed_event) {
+        if self.input_field.apply_timed_event(&timed_event) {
             Command::empty()
         } else {
             match kind {
@@ -343,7 +348,7 @@ impl PanelInput {
 
     fn is_key_allowed_for_verb(
         &self,
-        key: KeyEvent,
+        key: KeyCombination,
         mode: Mode,
     ) -> bool {
         match mode {
@@ -361,7 +366,7 @@ impl PanelInput {
     fn on_key(
         &mut self,
         timed_event: TimedEvent,
-        key: KeyEvent,
+        key: KeyCombination,
         con: &AppContext,
         sel_info: SelInfo<'_>,
         app_state: &AppState,
@@ -401,7 +406,7 @@ impl PanelInput {
         // 'tab' completion of a verb or one of its arguments
         if Verb::is_some_internal(verb, Internal::next_match) {
             if parts.verb_invocation.is_some() {
-                return self.auto_complete_verb(con, sel_info, raw, parts);
+                return self.auto_complete_verb(con, sel_info, raw, parts, Some(panel_state_type));
             }
             // if no verb is being edited, the state may handle this internal
             // in a specific way
@@ -445,7 +450,8 @@ impl PanelInput {
                     app_state,
                 );
                 let verb_invocation = exec_builder.invocation_with_default(
-                    &invocation_parser.invocation_pattern
+                    &invocation_parser.invocation_pattern,
+                    con,
                 );
                 let mut parts = parts;
                 parts.verb_invocation = Some(verb_invocation);
@@ -455,7 +461,7 @@ impl PanelInput {
         }
 
         // input field management
-        if mode == Mode::Input && self.input_field.apply_timed_event(timed_event) {
+        if mode == Mode::Input && self.input_field.apply_timed_event(&timed_event) {
             return Command::from_raw(self.input_field.get_content(), false);
         }
         Command::None

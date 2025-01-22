@@ -75,6 +75,7 @@ skin: {
     help_table_border: ansi(239) None
     preview: gray(20) gray(1) / gray(18) gray(2)
     preview_line_number: gray(12) gray(3)
+    preview_separator: ansi(94) None / gray(3) None
     preview_match: None ansi(29)
     hex_null: gray(11) None
     hex_ascii_graphic: gray(18) None
@@ -101,9 +102,8 @@ skin: {
 # one of the following lines:
 # 
 # syntax_theme: GitHub
-# syntax_theme: SolarizedDark
-# syntax_theme: SolarizedLight
 syntax_theme: SolarizedDark
+# syntax_theme: SolarizedLight
 # syntax_theme: MochaDark
 # syntax_theme: OceanDark
 # syntax_theme: OceanLight

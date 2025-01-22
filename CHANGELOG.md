@@ -1,3 +1,166 @@
+### next
+- update resvg dependency to 0.44 - Thanks @NoisyCoil
+
+### v1.44.6 - 2025-01-12
+<a name="v1.44.6"></a>
+ -fix .ignore files ignored when not in a git repository - Fix #970
+ -update git2 dependency to 0.20 - Fix #974
+
+### v1.44.5 - 2025-01-02
+<a name="v1.44.5"></a>
+- no real change (just reverting a crate name to ease some packaging)
+
+### v1.44.4 - 2025-01-01
+<a name="v1.44.4"></a>
+- fix panic in preview on syntax coloring (when a sublime syntax isn't compatible with the regex engine) - Fix #967
+
+### v1.44.3 - 2024-12-26
+<a name="v1.44.3"></a>
+- removed default bindings on left and right keys. You may add them back by adding this to your verbs.hjson:
+```Hjson
+    { key: "left", internal: "back" }
+    { key: "right", internal: "open_stay" }
+```
+- rustc minimal version changed from 1.76 to 1.79, which allows better performing image rendering
+- remove dependency to onig, to allow compatibility with gcc 15 - Fix #956
+
+### v1.44.2 - 2024-10-22
+<a name="v1.44.2"></a>
+- temp files created for kitty now erased on quitting or when too many of them have been written
+- no longer panics when launched with BROOT_LOG=debug but the broot.log file can't be created - Fix #951
+- fix user and group names displayed as "????" when coming from openldap - Fix #953
+
+### v1.44.1 - 2024-10-16
+<a name="v1.44.1"></a>
+- fix wrong position of IMEs (input method editors) popup - thanks @xubaiwang - See #948
+- improve querying the terminal for capabilities (prevent some escape chars from leaking)
+
+### v1.44.0 - 2024-09-07
+<a name="v1.44.0"></a>
+- `:focus_staging_area_no_open` internal, focus the staging area if it's already open, does nothing in other case - Fix #926
+- fix some composite patterns with several operators and no parenthesis
+
+### v1.43.0 - 2024-08-30
+<a name="v1.43.0"></a>
+- 'Size' and 'Deletion date' columns in trash screen. This screen now supports the `:toggle_date`, `:toggle_size`, `:sort_by_date`, and `:sort_by_size` internals.
+- new `:show` internal make the provided path visible and selected, adding lines to the tree if necessary, does nothing if the provided path is not a descendant of the current tree root (this part may change depending on feedback) - Fix #936
+
+### v1.42.0 - 2024-08-18
+<a name="v1.42.0"></a>
+- support of `.ignore` files with the same syntax than `.gitignore`. They have priority over `.gitignore` so that a personal `.ignore` file can override a shared `.gitignore` - See https://dystroy.org/broot/tree_view/#hidden-ignored-files - Fix #613
+- `:toggle_ignore` internal, identical to `:toggle_git_ignore`, but with a clearer name so should be preferred
+- the `panels` verb filter now works in most contexts (it was previously only checked on key events)
+- many dependencies updated
+
+### v1.41.1 - 2024-08-04
+<a name="v1.41.1"></a>
+- allow compilation with rustc 1.76 - Fix #925
+
+### v1.41.0 - 2024-08-04
+<a name="v1.41.0"></a>
+#### Major Feature: :search_again
+ctrl-s now triggers `:search_again` which either
+- brings back the last used search pattern, when no filtering pattern is active
+- does a "total search" if a filtering pattern is active and the search wasn't complete
+#### Major Feature: internals changing panel widths
+* `set_panel_width`, taking as parameter the index of the panel and the desired width
+* `move_panel_divider`, taking as parameter the index of the divider and the desired change
+`ctrl-<` is bound by default to `:move_panel_divider 0 -1`
+`ctrl->` is bound by default to `:move_panel_divider 0 1`
+See http://dystroy.org/broot/panels/#resize-panels
+#### Minor Changes:
+- when git file infos are shown, and git ignored files aren't hidden, those files are flagged with a 'I' - Fix #916
+- Remove .bak extension from content search exclusion list - Fix #915
+- Update nerdfont and vscode icons - Thanks @jpaju
+- `{initial-root}` verb argument
+
+### v1.40.0 - 2024-07-16
+<a name="v1.40.0"></a>
+#### Major Feature: preview transformers
+You can now define preview transformers to be applied before preview.
+They allow for example previewing PDF or Office files, or beautifying JSON files.
+Edit the `preview_transformers` array in your conf.hjson file.
+See https://dystroy.org/broot/conf_file/#preview
+#### Fixes
+- fix search on root - Fix #904
+- fix some verb cycling problems - Fix #902
+
+### v1.39.2 - 2024-07-08
+<a name="v1.39.2"></a>
+- fix UNC paths being displayed on Windows (regression at 1.39.1) - Fix #812 (again)
+
+### v1.39.1 - 2024-07-05
+<a name="v1.39.1"></a>
+- fix high-resolution (kitty protocole) image broken in release mode - Fix #885
+- canonicalize paths when focusing them (mostly useful when following links)
+- a few minor internal optimizations
+
+### v1.39.0 - 2024-05-31
+<a name="v1.39.0"></a>
+- `:open_trash` shows the content of the trash. Other new internals & verbs: `:delete_trashed_file`, `:restore_trashed_file`, `:purge_trash` - Fix #855
+- it's now possible to remove a default keybinding by defining a verb with no execution - Fix #632
+- fix build on Android - thanks @dead10ck
+
+### v1.38.0 - 2024-05-04
+<a name="v1.38.0"></a>
+- `-{flags}` verb lets you change the state the same way you do it at start, eg `:-sd` to show sizes and dates
+- calling `:focus` on the tree root now goes up the tree (experimental)
+
+### v1.37.0 - 2024-04-28
+<a name="v1.37.0"></a>
+- optionally display lines surrounding a matching line in preview, with `lines_before_match_in_preview` and  `lines_after_match_in_preview` - Fix #756
+- filtered preview: jump between matches with `:next_match` (default: `tab`) and `:previous_match` (default `shift-tab`)
+- display setuid, setgid and sticky bits in permission - Fix #863, Thanks @Jisu-Woniu
+
+### v1.36.1 - 2024-03-11
+<a name="v1.36.1"></a>
+- fix ANSI code leaking to the input on start on Mac - Fix #854
+
+### v1.36.0 - 2024-03-01
+<a name="v1.36.0"></a>
+- releases at github should be more `cargo binstall` friendly - Thanks @FrancescElies
+- improved `--help`
+- new `:stage_all_directories` internal - Fix #844
+- `:print_tree` is one line shorter, so as to let the original shell command visible without scroll
+- fix and document the "kitty-csi-check" optional feature which can be enabled at compilation
+
+### v1.35.0 - 2024-03-01
+<a name="v1.35.0"></a>
+- Nerdfont icon theme - Fix #333 - Thanks @JonasLeonhard, @cho-m, @texastoland, @asdf8dfafjk and others
+
+### v1.34.0 - 2024-02-24
+<a name="v1.34.0"></a>
+- new `--verb-output` launch argument, dedicated to the new `:clear_output` and `:write_output` internals - Fix #825
+- verb sequences (based on `cmd`) can take arguments from the verb invocation
+- don't fail launch in case of bad verb configuration, more helpful error message in such case
+- faster kitty image rendering by default - Fix #789
+- `{file-git-relative}` verb argument - Thanks @VasilisManol
+- modify nushell function import: `use` instead of `source` - Thanks @texastoland and @FrancescElies
+- fix some resizing and flickering problems on Windows (appeared with 1.33.0) - Fix #840
+- write `installed` flag file on `--install` - Fix #837
+
+### v1.33.1 - 2024-02-03
+<a name="v1.33.1"></a>
+- fix the release's version
+
+### v1.33.0 - 2024-02-03
+<a name="v1.33.0"></a>
+- on terminals supporting the kitty keyboard protocol, you can now define and use key combinations like `space-n`, `ctrl-alt-a-b`, `shift-space-c`, `ctrl-enter`, etc.
+- new syntax for special paths - Fix #687, #669
+
+### v1.32.0 - 2024-01-02
+<a name="v1.32.0"></a>
+- with "modal" enabled, `initial_mode` setting lets you choose whether to start in `input` mode or `command` mode (default) - Fix #708
+
+### v1.31.0 - 2023-12-30
+<a name="v1.31.0"></a>
+- keep broot's work dir synchronized with the root of the current panel. Can be disabled in conf with `update_work_dir: false` - Fix #813
+- fix `:trash` internal not working on staged files
+
+### v1.30.2 - 2023-12-23
+<a name="v1.30.2"></a>
+- don't canonicalize paths on windows on new panels - Fix #809
+
 ### v1.30.1 - 2023-12-03
 <a name="v1.30.1"></a>
 - nushell script: replace the deprecated `def-env` with `def --env` - Thanks @melMass

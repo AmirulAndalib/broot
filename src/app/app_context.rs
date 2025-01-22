@@ -1,22 +1,28 @@
 use {
     super::*,
     crate::{
+        app::Mode,
         cli::{Args, TriBool},
         conf::*,
         content_search,
+        display::LayoutInstructions,
         errors::*,
         file_sum,
         icon::*,
-        path,
+        kitty::TransmissionMedium,
         pattern::SearchModeMap,
+        path::SpecialPaths,
+        preview::PreviewTransformers,
         skin::ExtColorMap,
         syntactic::SyntaxTheme,
         tree::TreeOptions,
         verb::*,
     },
+    crokey::crossterm::tty::IsTty,
     std::{
         convert::{TryFrom, TryInto},
         io,
+        num::NonZeroUsize,
         path::{Path, PathBuf},
     },
 };
@@ -24,6 +30,9 @@ use {
 /// The container that can be passed around to provide the configuration things
 /// for the whole life of the App
 pub struct AppContext {
+
+    /// Whether the application is running in a normal TTY context
+    pub is_tty: bool,
 
     /// The initial tree root
     pub initial_root: PathBuf,
@@ -49,7 +58,7 @@ pub struct AppContext {
     pub verb_store: VerbStore,
 
     /// the paths for which there's a special behavior to follow (comes from conf)
-    pub special_paths: Vec<path::SpecialPath>,
+    pub special_paths: SpecialPaths,
 
     /// the map between search prefixes and the search mode to apply
     pub search_modes: SearchModeMap,
@@ -77,6 +86,9 @@ pub struct AppContext {
     /// modal (aka "vim) mode enabled
     pub modal: bool,
 
+    /// the initial mode (only relevant when modal is true)
+    pub initial_mode: Mode,
+
     /// Whether to support mouse interactions
     pub capture_mouse: bool,
 
@@ -101,6 +113,34 @@ pub struct AppContext {
     /// the optional pattern used to change the terminal's title
     /// (if none, the title isn't modified)
     pub terminal_title_pattern: Option<ExecPattern>,
+
+    /// whether to reset the terminal's title on exit
+    pub reset_terminal_title_on_exit: bool,
+
+    /// whether to sync broot's work dir with the current panel's root
+    pub update_work_dir: bool,
+
+    /// Whether Kitty keyboard enhancement flags are pushed, so that
+    /// we know whether we need to temporarily disable them during
+    /// the execution of a terminal program.
+    /// This is determined by app::run on launching the event source.
+    pub keyboard_enhanced: bool,
+
+    pub kitty_graphics_transmission: TransmissionMedium,
+
+    pub kept_kitty_temp_files: NonZeroUsize,
+
+    /// Number of lines to display after a match in the preview
+    pub lines_after_match_in_preview: usize,
+
+    /// Number of lines to display before a match in the preview
+    pub lines_before_match_in_preview: usize,
+
+    /// The set of transformers called before previewing a file
+    pub preview_transformers: PreviewTransformers,
+
+    /// layout modifiers, like divider moves
+    pub layout_instructions: LayoutInstructions,
 }
 
 impl AppContext {
@@ -109,6 +149,7 @@ impl AppContext {
         verb_store: VerbStore,
         config: &Conf,
     ) -> Result<Self, ProgramError> {
+        let is_tty = std::io::stdout().is_tty();
         let config_default_args = config
             .default_flags
             .as_ref()
@@ -123,15 +164,12 @@ impl AppContext {
         };
         let icons = config.icon_theme.as_ref()
             .and_then(|itn| icon_plugin(itn));
-        let mut special_paths = config.special_paths
-            .iter()
-            .map(|(k, v)| path::SpecialPath::new(k.clone(), *v))
-            .collect();
-        path::add_defaults(&mut special_paths);
+        let mut special_paths: SpecialPaths = (&config.special_paths).try_into()?;
+        special_paths.add_defaults();
         let search_modes = config
             .search_modes
             .as_ref()
-            .map(|map| map.try_into())
+            .map(TryInto::try_into)
             .transpose()?
             .unwrap_or_default();
         let ext_colors = ExtColorMap::try_from(&config.ext_colors)
@@ -172,8 +210,15 @@ impl AppContext {
             .unwrap_or(content_search::DEFAULT_MAX_FILE_SIZE);
 
         let terminal_title_pattern = config.terminal_title.clone();
+        let reset_terminal_title_on_exit = config.reset_terminal_title_on_exit.unwrap_or(false);
+        let preview_transformers = PreviewTransformers::new(&config.preview_transformers)?;
+        let layout_instructions = config.layout_instructions.clone().unwrap_or_default();
+        let kept_kitty_temp_files = config.kept_kitty_temp_files.unwrap_or(
+            std::num::NonZeroUsize::new(500).unwrap(),
+        );
 
         Ok(Self {
+            is_tty,
             initial_root,
             initial_file,
             initial_tree_options,
@@ -190,6 +235,7 @@ impl AppContext {
             true_colors,
             icons,
             modal: config.modal.unwrap_or(false),
+            initial_mode: config.initial_mode.unwrap_or(Mode::Command),
             capture_mouse,
             max_panels_count,
             quit_on_last_cancel: config.quit_on_last_cancel.unwrap_or(false),
@@ -197,6 +243,16 @@ impl AppContext {
             max_staged_count,
             content_search_max_file_size,
             terminal_title_pattern,
+            reset_terminal_title_on_exit,
+            update_work_dir: config.update_work_dir.unwrap_or(true),
+            keyboard_enhanced: false,
+            kitty_graphics_transmission: config.kitty_graphics_transmission
+                .unwrap_or_default(),
+            kept_kitty_temp_files,
+            lines_after_match_in_preview: config.lines_after_match_in_preview.unwrap_or(0),
+            lines_before_match_in_preview: config.lines_before_match_in_preview.unwrap_or(0),
+            preview_transformers,
+            layout_instructions,
         })
     }
     /// Return the --cmd argument, coming from the launch arguments (prefered)
@@ -204,7 +260,25 @@ impl AppContext {
     pub fn cmd(&self) -> Option<&str> {
         self.launch_args.cmd.as_ref().or(
             self.config_default_args.as_ref().and_then(|args| args.cmd.as_ref())
-        ).map(|s| s.as_str())
+        ).map(String::as_str)
+    }
+    pub fn initial_mode(&self) -> Mode {
+        if self.modal {
+            self.initial_mode
+        } else {
+            Mode::Input
+        }
+    }
+}
+
+/// An unsafe implementation of Default, for tests only
+#[cfg(test)]
+impl Default for AppContext {
+    fn default() -> Self {
+        let mut config = Conf::default();
+        let verb_store = VerbStore::new(&mut config).unwrap();
+        let launch_args = parse_default_flags("").unwrap();
+        Self::from(launch_args, verb_store, &config).unwrap()
     }
 }
 

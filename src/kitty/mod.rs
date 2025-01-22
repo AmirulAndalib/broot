@@ -7,6 +7,7 @@ pub use {
 
 use {
     crate::{
+        app::AppContext,
         display::W,
         errors::ProgramError,
         image::SourceImage,
@@ -15,6 +16,7 @@ use {
     once_cell::sync::Lazy,
     std::{
         io::Write,
+        path::Path,
         sync::Mutex,
     },
     termimad::Area,
@@ -64,15 +66,26 @@ impl KittyManager {
             _ => None,
         }
     }
-    pub fn renderer(&mut self) -> Option<&mut KittyImageRenderer> {
+    pub fn delete_temp_files(&mut self) {
+        if let MaybeRenderer::Enabled { renderer } = &mut self.renderer {
+            renderer.delete_temp_files();
+        }
+    }
+    pub fn renderer(
+        &mut self,
+        con: &AppContext,
+    ) -> Option<&mut KittyImageRenderer> {
         if matches!(self.renderer, MaybeRenderer::Disabled) {
             return None;
         }
         if matches!(self.renderer, MaybeRenderer::Enabled { .. }) {
             return self.renderer_if_tested();
         }
-        // we're in the Untested branch
-        match KittyImageRenderer::new() {
+        let options = KittyImageRendererOptions {
+            transmission_medium: con.kitty_graphics_transmission,
+            kept_temp_files: con.kept_kitty_temp_files,
+        };
+        match KittyImageRenderer::new(options) {
             Some(renderer) => {
                 self.renderer = MaybeRenderer::Enabled { renderer };
                 self.renderer_if_tested()
@@ -88,23 +101,26 @@ impl KittyManager {
         kept_id: KittyImageId,
         drawing_count: usize,
     ) {
-        for image in self.rendered_images.iter_mut() {
+        for image in &mut self.rendered_images {
             if image.image_id == kept_id {
                 image.drawing_count = drawing_count;
             }
         }
     }
+    #[allow(clippy::too_many_arguments)] // yes, I know
     pub fn try_print_image(
         &mut self,
         w: &mut W,
         src: &SourceImage,
+        src_path: &Path, // used to build a cache key
         area: &Area,
         bg: Color,
         drawing_count: usize,
+        con: &AppContext,
     ) -> Result<Option<KittyImageId>, ProgramError> {
-        if let Some(renderer) = self.renderer() {
+        if let Some(renderer) = self.renderer(con) {
             let img = src.optimal()?;
-            let new_id = renderer.print(w, &img, area, bg)?;
+            let new_id = renderer.print(w, &img, src_path, area, bg)?;
             self.rendered_images.push(RenderedImage {
                 image_id: new_id,
                 drawing_count,

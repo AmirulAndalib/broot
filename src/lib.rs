@@ -37,6 +37,9 @@ pub mod verb;
 #[cfg(unix)]
 pub mod filesystems;
 
-
 #[cfg(unix)]
 pub mod net;
+
+#[cfg(feature = "trash")]
+pub mod trash;
+

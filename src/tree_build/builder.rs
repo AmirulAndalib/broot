@@ -1,27 +1,42 @@
 use {
     super::{
-        bid::{BId, SortableBId},
-        BuildReport,
+        bid::{
+            BId,
+            SortableBId,
+        },
         bline::BLine,
+        BuildReport,
     },
     crate::{
         app::AppContext,
         errors::TreeBuildError,
-        git::{GitIgnoreChain, GitIgnorer, LineStatusComputer},
+        git::{
+            IgnoreChain,
+            Ignorer,
+            LineStatusComputer,
+        },
+        path::Directive,
         pattern::Candidate,
-        path::{SpecialHandling, SpecialPathList},
-        task_sync::ComputationResult,
-        task_sync::Dam,
+        task_sync::{
+            ComputationResult,
+            Dam,
+        },
         tree::*,
     },
     git2::Repository,
     id_arena::Arena,
     std::{
-        collections::{BinaryHeap, VecDeque},
+        collections::{
+            BinaryHeap,
+            VecDeque,
+        },
         fs,
         path::PathBuf,
         result::Result,
-        time::{Duration, Instant},
+        time::{
+            Duration,
+            Instant,
+        },
     },
 };
 
@@ -58,8 +73,9 @@ pub struct TreeBuilder<'c> {
     targeted_size: usize, // the number of lines we should fill (height of the screen)
     blines: Arena<BLine>,
     root_id: BId,
+    subpath_offset: usize,
     total_search: bool,
-    git_ignorer: GitIgnorer,
+    git_ignorer: Ignorer,
     line_status_computer: Option<LineStatusComputer>,
     con: &'c AppContext,
     pub matches_max: Option<usize>, // optional hard limit
@@ -68,7 +84,6 @@ pub struct TreeBuilder<'c> {
     report: BuildReport,
 }
 impl<'c> TreeBuilder<'c> {
-
     pub fn from(
         path: PathBuf,
         options: TreeOptions,
@@ -76,7 +91,8 @@ impl<'c> TreeBuilder<'c> {
         con: &'c AppContext,
     ) -> Result<TreeBuilder<'c>, TreeBuildError> {
         let mut blines = Arena::new();
-        let mut git_ignorer = time!(GitIgnorer::default());
+        let subpath_offset = path.components().count();
+        let mut git_ignorer = time!(Ignorer::default());
         let root_ignore_chain = git_ignorer.root_chain(&path);
         let line_status_computer = if options.filter_by_git_status || options.show_git_file_info {
             time!(
@@ -89,7 +105,11 @@ impl<'c> TreeBuilder<'c> {
             None
         };
         let root_id = BLine::from_root(&mut blines, path, root_ignore_chain, &options)?;
-        let trim_root = match (options.trim_root, options.pattern.is_some(), options.sort.prevent_deep_display()) {
+        let trim_root = match (
+            options.trim_root,
+            options.pattern.is_some(),
+            options.sort.prevent_deep_display(),
+        ) {
             // we never want to trim the root if there's a sort
             (_, _, true) => false,
             // if the user don't want root trimming, we don't trim
@@ -104,6 +124,7 @@ impl<'c> TreeBuilder<'c> {
             targeted_size,
             blines,
             root_id,
+            subpath_offset,
             total_search: true, // we'll set it to false if we don't look at all children
             git_ignorer,
             line_status_computer,
@@ -116,7 +137,7 @@ impl<'c> TreeBuilder<'c> {
     }
 
     /// Return a bline if the dir_entry directly matches the options and there's no error
-    fn make_line(
+    fn make_bline(
         &mut self,
         parent_id: BId,
         e: &fs::DirEntry,
@@ -124,22 +145,28 @@ impl<'c> TreeBuilder<'c> {
     ) -> Option<BLine> {
         let name = e.file_name();
         if name.is_empty() {
+            // this should not really happen as the only path with an empty name is the root
+            // and we don't call this function for the tree root
             self.report.error_count += 1;
             return None;
         }
         let path = e.path();
+        let special_handling = self.con.special_paths.find(&path);
+        if special_handling.show == Directive::Never {
+            return None;
+        }
         if !self.options.show_hidden
             && name.as_bytes()[0] == b'.'
-            // if not matches any SpecialHandling::NoHide pattern
-            && !self.con.special_paths
-            .iter()
-            .filter(|sp| sp.handling == SpecialHandling::NoHide)
-            .any(|sp| sp.pattern.matches_path(&path))
+            && special_handling.show != Directive::Always
         {
             self.report.hidden_count += 1;
             return None;
         }
-        let name = name.to_string_lossy();
+        let Some(name) = name.to_str() else {
+            warn!("invalid utf8 file name: {:?}", name);
+            self.report.error_count += 1;
+            return None;
+        };
         let mut has_match = true;
         let mut score = 10000 - i32::from(depth); // we dope less deep entries
         let file_type = match e.file_type() {
@@ -149,27 +176,25 @@ impl<'c> TreeBuilder<'c> {
                 return None;
             }
         };
-        let parent_subpath = &self.blines[parent_id].subpath;
-        let subpath = if !parent_subpath.is_empty() {
-            format!("{}/{}", parent_subpath, &name)
-        } else {
-            name.to_string()
-        };
+        let subpath = path
+            .components()
+            .skip(self.subpath_offset)
+            .collect::<PathBuf>();
         let candidate = Candidate {
-            name: &name,
-            subpath: &subpath,
+            name,
+            subpath: &subpath.to_string_lossy(),
             path: &path,
             regular_file: file_type.is_file(),
         };
-        let direct_match = if let Some(pattern_score) = self.options.pattern.pattern.score_of(candidate) {
-            // we dope direct matches to compensate for depth doping of parent folders
-            score += pattern_score + 10;
-            true
-        } else {
-            has_match = false;
-            false
-        };
-        let name = name.to_string();
+        let direct_match =
+            if let Some(pattern_score) = self.options.pattern.pattern.score_of(candidate) {
+                // we dope direct matches to compensate for depth doping of parent folders
+                score += pattern_score + 10;
+                true
+            } else {
+                has_match = false;
+                false
+            };
         if has_match && self.options.filter_by_git_status {
             if let Some(line_status_computer) = &self.line_status_computer {
                 if !line_status_computer.is_interesting(&path) {
@@ -177,10 +202,8 @@ impl<'c> TreeBuilder<'c> {
                 }
             }
         }
-        if file_type.is_file() {
-            if !has_match {
-                return None;
-            }
+        if file_type.is_file() && !has_match {
+            return None;
         }
         if self.options.only_folders && !file_type.is_dir() {
             if !file_type.is_symlink() {
@@ -193,25 +216,21 @@ impl<'c> TreeBuilder<'c> {
                 return None;
             }
         }
-        let special_handling = self.con.special_paths.find(&path);
-        if special_handling == SpecialHandling::Hide {
-            return None;
-        }
         if self.options.respect_git_ignore {
             let parent_chain = &self.blines[parent_id].git_ignore_chain;
             if !self
                 .git_ignorer
-                .accepts(parent_chain, &path, &name, file_type.is_dir())
+                .accepts(parent_chain, &path, name, file_type.is_dir())
             {
-                return None;
+                if special_handling.show != Directive::Always {
+                    return None;
+                }
             }
         };
         Some(BLine {
             parent_id: Some(parent_id),
             path,
             depth,
-            subpath,
-            name,
             file_type,
             children: None,
             next_child_idx: 0,
@@ -220,13 +239,18 @@ impl<'c> TreeBuilder<'c> {
             direct_match,
             score,
             nb_kept_children: 0,
-            git_ignore_chain: GitIgnoreChain::default(),
+            git_ignore_chain: IgnoreChain::default(),
             special_handling,
         })
     }
 
+    /// Fill the bline's children vec of blines.
+    ///
     /// Return true when there are direct matches among children
-    fn load_children(&mut self, bid: BId) -> bool {
+    fn load_children(
+        &mut self,
+        bid: BId,
+    ) -> bool {
         let mut has_child_match = false;
         match self.blines[bid].read_dir() {
             Ok(entries) => {
@@ -234,7 +258,7 @@ impl<'c> TreeBuilder<'c> {
                 let child_depth = self.blines[bid].depth + 1;
                 let mut lines = Vec::new();
                 for e in entries.flatten() {
-                    if let Some(line) = self.make_line(bid, &e, child_depth) {
+                    if let Some(line) = self.make_bline(bid, &e, child_depth) {
                         lines.push(line);
                     }
                 }
@@ -256,9 +280,9 @@ impl<'c> TreeBuilder<'c> {
                 }
                 children.sort_by(|&a, &b| {
                     self.blines[a]
-                        .name
+                        .name()
                         .to_lowercase()
-                        .cmp(&self.blines[b].name.to_lowercase())
+                        .cmp(&self.blines[b].name().to_lowercase())
                 });
                 self.blines[bid].children = Some(children);
             }
@@ -272,7 +296,10 @@ impl<'c> TreeBuilder<'c> {
 
     /// return the next child.
     /// load_children must have been called before on parent_id
-    fn next_child(&mut self, parent_id: BId) -> Option<BId> {
+    fn next_child(
+        &mut self,
+        parent_id: BId,
+    ) -> Option<BId> {
         let bline = &mut self.blines[parent_id];
         if let Some(children) = &bline.children {
             if bline.next_child_idx < children.len() {
@@ -290,7 +317,11 @@ impl<'c> TreeBuilder<'c> {
     /// first step of the build: we explore the directories and gather lines.
     /// If there's no search pattern we stop when we have enough lines to fill the screen.
     /// If there's a pattern, we try to gather more lines that will be sorted afterwards.
-    fn gather_lines(&mut self, total_search: bool, dam: &Dam) -> Result<Vec<BId>, TreeBuildError> {
+    fn gather_lines(
+        &mut self,
+        total_search: bool,
+        dam: &Dam,
+    ) -> Result<Vec<BId>, TreeBuildError> {
         let start = Instant::now();
         let mut out_blines: Vec<BId> = Vec::new(); // the blines we want to display
         let optimal_size = if self.options.pattern.pattern.has_real_scores() {
@@ -306,16 +337,16 @@ impl<'c> TreeBuilder<'c> {
         open_dirs.push_back(self.root_id);
         let deep = self.deep && self.options.show_tree && !self.options.sort.prevent_deep_display();
         loop {
-            if !total_search && (
-                (nb_lines_ok > optimal_size)
-                || (nb_lines_ok >= self.targeted_size && start.elapsed() > NOT_LONG)
-            ) {
+            if !total_search
+                && ((nb_lines_ok > optimal_size)
+                    || (nb_lines_ok >= self.targeted_size && start.elapsed() > NOT_LONG))
+            {
                 self.total_search = false;
                 break;
             }
             if let Some(max) = self.matches_max {
                 if nb_lines_ok > max {
-                    return Err(TreeBuildError::TooManyMatches{max});
+                    return Err(TreeBuildError::TooManyMatches { max });
                 }
             }
             if let Some(open_dir_id) = open_dirs.pop_front() {
@@ -368,7 +399,7 @@ impl<'c> TreeBuilder<'c> {
         }
         if let Some(max) = self.matches_max {
             if nb_lines_ok > max {
-                return Err(TreeBuildError::TooManyMatches{max});
+                return Err(TreeBuildError::TooManyMatches { max });
             }
         }
         if !self.trim_root {
@@ -386,9 +417,12 @@ impl<'c> TreeBuilder<'c> {
     ///  strictly necessary to fill the screen.
     /// This function keeps only the best ones while taking care of not
     ///  removing a parent before its children.
-    fn trim_excess(&mut self, out_blines: &[BId]) {
+    fn trim_excess(
+        &mut self,
+        out_blines: &[BId],
+    ) {
         let mut count = 1;
-        for id in out_blines[1..].iter() {
+        for id in &out_blines[1..] {
             if self.blines[*id].has_match {
                 //debug!("bline before trimming: {:?}", &self.blines[*idx].path);
                 count += 1;
@@ -398,11 +432,10 @@ impl<'c> TreeBuilder<'c> {
             }
         }
         let mut remove_queue: BinaryHeap<SortableBId> = BinaryHeap::new();
-        for id in out_blines[1..].iter() {
+        for id in &out_blines[1..] {
             let bline = &self.blines[*id];
             if bline.has_match && bline.nb_kept_children == 0 && (bline.depth > 1 || self.trim_root)
             {
-                //debug!("in list: {:?} score: {}",  &bline.path, bline.score);
                 remove_queue.push(SortableBId {
                     id: *id,
                     score: bline.score,
@@ -430,16 +463,56 @@ impl<'c> TreeBuilder<'c> {
         }
     }
 
+    fn make_tree_line(
+        &self,
+        bid: BId,
+    ) -> Result<TreeLine, TreeBuildError> {
+        let bline = &self.blines[bid];
+        let path = bline.path.clone();
+        let subpath = if bline.depth == 0 {
+            bline.path.to_string_lossy().to_string()
+        } else {
+            bline
+                .path
+                .components()
+                .skip(self.subpath_offset)
+                .map(|c| c.as_os_str())
+                .collect::<PathBuf>()
+                .to_string_lossy()
+                .to_string()
+        };
+        let unlisted = bline
+            .children
+            .as_ref()
+            .map_or(0, |children| children.len() - bline.next_child_idx);
+        TreeLineBuilder {
+            path,
+            subpath,
+            id: bid.index(),
+            parent_id: bline.parent_id.map(|bid| bid.index()),
+            depth: bline.depth,
+            unlisted,
+            nb_kept_children: bline.nb_kept_children as usize,
+            has_error: bline.has_error,
+            score: bline.score,
+            direct_match: bline.direct_match,
+        }
+        .build(self.con)
+    }
+
     /// make a tree from the builder's specific structure
-    fn take_as_tree(mut self, out_blines: &[BId]) -> Tree {
+    fn take_as_tree(
+        mut self,
+        out_blines: &[BId],
+    ) -> Tree {
         let mut lines: Vec<TreeLine> = Vec::new();
-        for id in out_blines.iter() {
+        for id in out_blines {
             if self.blines[*id].has_match {
                 // we need to count the children, so we load them
                 if self.blines[*id].can_enter() && self.blines[*id].children.is_none() {
                     self.load_children(*id);
                 }
-                if let Ok(tree_line) = self.blines[*id].to_tree_line(*id, self.con) {
+                if let Ok(tree_line) = self.make_tree_line(*id) {
                     lines.push(tree_line);
                 } else {
                     // I guess the file went missing during tree computation
@@ -450,8 +523,10 @@ impl<'c> TreeBuilder<'c> {
                 }
             }
         }
+        let next_line_id = lines.iter().map(|line| line.id).max().unwrap_or(0) + 1;
         let mut tree = Tree {
-            lines: lines.into_boxed_slice(),
+            lines,
+            next_line_id,
             selection: 0,
             options: self.options.clone(),
             scroll: 0,
@@ -466,7 +541,7 @@ impl<'c> TreeBuilder<'c> {
             tree.git_status = ComputationResult::NotComputed;
             // it would make no sense to keep only files having a git status and
             // not display that type
-            for line in tree.lines.iter_mut() {
+            for line in &mut tree.lines {
                 line.git_status = computer.line_status(&line.path);
             }
         }
@@ -477,33 +552,34 @@ impl<'c> TreeBuilder<'c> {
     ///
     /// Return None if the lifetime expires before end of computation
     /// (usually because the user hit a key)
-    pub fn build_tree(mut self, total_search: bool, dam: &Dam) -> Result<Tree, TreeBuildError> {
-        self.gather_lines(total_search, dam)
-            .map(|blines_ids| {
-                debug!("blines before trimming: {}", blines_ids.len());
-                if !self.total_search {
-                    self.trim_excess(&blines_ids);
-                }
-                self.take_as_tree(&blines_ids)
-            })
+    pub fn build_tree(
+        mut self,
+        total_search: bool,
+        dam: &Dam,
+    ) -> Result<Tree, TreeBuildError> {
+        let blines_ids = self.gather_lines(total_search, dam)?;
+        debug!("blines before trimming: {}", blines_ids.len());
+        if !self.total_search {
+            self.trim_excess(&blines_ids);
+        }
+        Ok(self.take_as_tree(&blines_ids))
     }
 
-    ///
     pub fn build_paths<F>(
         mut self,
         total_search: bool,
         dam: &Dam,
-        filter: F
+        filter: F,
     ) -> Result<Vec<PathBuf>, TreeBuildError>
-    where F: Fn(&BLine) -> bool
+    where
+        F: Fn(&BLine) -> bool,
     {
-        self.gather_lines(total_search, dam)
-            .map(|mut blines_ids| {
-                blines_ids
-                    .drain(..)
-                    .filter(|&bid| filter(&self.blines[bid]))
-                    .map(|id| self.blines[id].path.clone())
-                    .collect()
-            })
+        self.gather_lines(total_search, dam).map(|mut blines_ids| {
+            blines_ids
+                .drain(..)
+                .filter(|&bid| self.blines[bid].direct_match && filter(&self.blines[bid]))
+                .map(|id| self.blines[id].path.clone())
+                .collect()
+        })
     }
 }

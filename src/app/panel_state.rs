@@ -2,12 +2,12 @@ use {
     super::*,
     crate::{
         command::*,
-        display::{Screen, W},
+        display::*,
         errors::ProgramError,
         flag::Flag,
         help::HelpState,
         pattern::*,
-        preview::{PreviewMode, PreviewState},
+        preview::*,
         print,
         stage::*,
         task_sync::Dam,
@@ -79,9 +79,11 @@ pub trait PanelState {
     /// The invocation comes from the input and may be related
     /// to a different verb (the verb may have been triggered
     /// by a key shortcut)
+    #[allow(clippy::too_many_arguments)]
     fn on_internal(
         &mut self,
         w: &mut W,
+        invocation_parser: Option<&InvocationParser>,
         internal_exec: &InternalExecution,
         input_invocation: Option<&VerbInvocation>,
         trigger_type: TriggerType,
@@ -92,9 +94,11 @@ pub trait PanelState {
     /// a generic implementation of on_internal which may be
     /// called by states when they don't have a specific
     /// behavior to execute
+    #[allow(clippy::too_many_arguments)]
     fn on_internal_generic(
         &mut self,
         _w: &mut W,
+        invocation_parser: Option<&InvocationParser>,
         internal_exec: &InternalExecution,
         input_invocation: Option<&VerbInvocation>,
         _trigger_type: TriggerType,
@@ -107,6 +111,25 @@ pub trait PanelState {
             .map(|inv| inv.bang)
             .unwrap_or(internal_exec.bang);
         Ok(match internal_exec.internal {
+            Internal::apply_flags => {
+                debug!("applying flags input_invocation: {:#?}", input_invocation);
+                let flags = input_invocation.and_then(|inv| inv.args.as_ref());
+                if let Some(flags) = flags {
+                    self.with_new_options(
+                        screen,
+                        &|o| {
+                            match o.apply_flags(flags) {
+                                Ok(()) => "*flags applied*",
+                                Err(e) => e,
+                            }
+                        },
+                        bang,
+                        con,
+                    )
+                } else {
+                    CmdResult::error(":apply_flags needs flags as arguments")
+                }
+            }
             Internal::back => CmdResult::PopState,
             Internal::copy_line | Internal::copy_path => {
                 #[cfg(not(feature = "clipboard"))]
@@ -134,6 +157,60 @@ pub trait PanelState {
                 validate_purpose: false,
                 panel_ref: PanelReference::Active,
             },
+            Internal::move_panel_divider => {
+                let MoveDividerArgs { divider, dx } = get_arg(
+                    input_invocation,
+                    internal_exec,
+                    MoveDividerArgs { divider: 0, dx: 1 },
+                );
+                CmdResult::ChangeLayout(LayoutInstruction::MoveDivider { divider, dx })
+            }
+            Internal::default_layout => {
+                CmdResult::ChangeLayout(LayoutInstruction::Clear)
+            }
+            Internal::set_panel_width => {
+                let SetPanelWidthArgs { panel, width } = get_arg(
+                    input_invocation,
+                    internal_exec,
+                    SetPanelWidthArgs { panel: 0, width: 100 },
+                );
+                CmdResult::ChangeLayout(LayoutInstruction::SetPanelWidth { panel, width })
+            }
+            #[cfg(feature = "trash")]
+            Internal::purge_trash => {
+                let res = trash::os_limited::list()
+                    .and_then(|items| {
+                        trash::os_limited::purge_all(items)
+                    });
+                match res {
+                    Ok(()) => CmdResult::RefreshState { clear_cache: false },
+                    Err(e) => CmdResult::DisplayError(format!("{e}")),
+                }
+            }
+            #[cfg(feature = "trash")]
+            Internal::open_trash => {
+                let trash_state = crate::trash::TrashState::new(
+                    self.tree_options(),
+                    con,
+                );
+                match trash_state {
+                    Ok(state) => {
+                        let bang = input_invocation
+                            .map(|inv| inv.bang)
+                            .unwrap_or(internal_exec.bang);
+                        if bang && cc.app.preview_panel.is_none() {
+                            CmdResult::NewPanel {
+                                state: Box::new(state),
+                                purpose: PanelPurpose::None,
+                                direction: HDir::Right,
+                            }
+                        } else {
+                            CmdResult::new_state(Box::new(state))
+                        }
+                    }
+                    Err(e) => CmdResult::DisplayError(format!("{e}")),
+                }
+            }
             #[cfg(unix)]
             Internal::filesystems => {
                 let fs_state = crate::filesystems::FilesystemState::new(
@@ -405,7 +482,7 @@ pub trait PanelState {
 					con,
 				)
             }
-            Internal::toggle_git_ignore => {
+            Internal::toggle_git_ignore | Internal::toggle_ignore => {
                 self.with_new_options(
 					screen,
 					&|o| {
@@ -508,9 +585,16 @@ pub trait PanelState {
             Internal::escape => {
                 CmdResult::HandleInApp(Internal::escape)
             }
+            Internal::focus_staging_area_no_open => {
+                CmdResult::HandleInApp(Internal::focus_staging_area_no_open)
+            }
+            // panel_left depends on the kind of panel and is usually handled
+            // in a specific state, contrary to panel_left_no_open
             Internal::panel_left | Internal::panel_left_no_open => {
                 CmdResult::HandleInApp(Internal::panel_left_no_open)
             }
+            // panel_right depends on the kind of panel and is usually handled
+            // in a specific state, contrary to panel_right_no_open
             Internal::panel_right | Internal::panel_right_no_open => {
                 CmdResult::HandleInApp(Internal::panel_right_no_open)
             }
@@ -571,6 +655,36 @@ pub trait PanelState {
             Internal::print_relative_path => print::print_relative_paths(self.sel_info(app_state), con)?,
             Internal::refresh => CmdResult::RefreshState { clear_cache: true },
             Internal::quit => CmdResult::Quit,
+            Internal::clear_output => {
+                verb_clear_output(con)
+                    .unwrap_or_else(|e| CmdResult::DisplayError(format!("{e}")))
+            }
+            Internal::write_output => {
+                let sel_info = self.sel_info(app_state);
+                let exec_builder = match input_invocation {
+                    Some(inv) => {
+                        ExecutionStringBuilder::with_invocation(
+                            invocation_parser,
+                            sel_info,
+                            app_state,
+                            inv.args.as_ref(),
+                        )
+                    }
+                    None => {
+                        ExecutionStringBuilder::without_invocation(sel_info, app_state)
+                    }
+                };
+                if let Some(pattern) = internal_exec.arg.as_ref() {
+                    let line = exec_builder.string(pattern, con);
+                    verb_write(con, &line)?;
+                } else {
+                    let line = input_invocation
+                        .and_then(|inv| inv.args.as_ref())
+                        .map_or("", String::as_str);
+                    verb_write(con, line)?;
+                }
+                CmdResult::Keep
+            }
             _ => CmdResult::Keep,
         })
     }
@@ -653,6 +767,7 @@ pub trait PanelState {
             VerbExecution::Internal(internal_exec) => {
                 self.on_internal(
                     w,
+                    verb.invocation_parser.as_ref(),
                     internal_exec,
                     invocation,
                     trigger_type,
@@ -700,7 +815,7 @@ pub trait PanelState {
             }
         }
         let exec_builder = ExecutionStringBuilder::with_invocation(
-            &verb.invocation_parser,
+            verb.invocation_parser.as_ref(),
             sel_info,
             app_state,
             if let Some(inv) = invocation {
@@ -719,7 +834,7 @@ pub trait PanelState {
         seq_ex: &SequenceExecution,
         invocation: Option<&VerbInvocation>,
         app_state: &mut AppState,
-        _cc: &CmdContext,
+        cc: &CmdContext,
     ) -> Result<CmdResult, ProgramError> {
         let sel_info = self.sel_info(app_state);
         if matches!(sel_info, SelInfo::More(_)) {
@@ -729,7 +844,7 @@ pub trait PanelState {
             return Ok(CmdResult::error("sequences can't be executed on multiple selections"));
         }
         let exec_builder = ExecutionStringBuilder::with_invocation(
-            &verb.invocation_parser,
+            verb.invocation_parser.as_ref(),
             sel_info,
             app_state,
             if let Some(inv) = invocation {
@@ -738,12 +853,12 @@ pub trait PanelState {
                 None
             },
         );
-        // TODO what follows is dangerous: if an inserted group value contains the separator,
-        // the parsing will cut on this separator
-        let sequence = Sequence {
-            raw: exec_builder.shell_exec_string(&ExecPattern::from_string(&seq_ex.sequence.raw)),
-            separator: seq_ex.sequence.separator.clone(),
-        };
+        let sequence = exec_builder.sequence(
+            &seq_ex.sequence,
+            &cc.app.con.verb_store,
+            cc.app.con,
+            Some(self.get_type()),
+        );
         Ok(CmdResult::ExecuteSequence { sequence })
     }
 
@@ -782,6 +897,7 @@ pub trait PanelState {
                 input_invocation,
             } => self.on_internal(
                 w,
+                None,
                 &InternalExecution::from_internal(*internal),
                 input_invocation.as_ref(),
                 TriggerType::Other,
@@ -793,6 +909,7 @@ pub trait PanelState {
                 match con.verb_store.search_sel_info(
                     &invocation.name,
                     sel_info,
+                    Some(self.get_type()),
                 ) {
                     PrefixSearchResult::Match(_, verb) => {
                         self.execute_verb(
@@ -944,7 +1061,6 @@ pub trait PanelState {
         has_previous_state: bool,
         width: usize,
     ) -> Status {
-        info!("get_status cc.cmd={:?}", &cc.cmd);
         match &cc.cmd {
             Command::PatternEdit { .. } => self.no_verb_status(has_previous_state, cc.app.con, width),
             Command::VerbEdit(invocation) | Command::VerbTrigger { input_invocation: Some(invocation), .. } => {
@@ -958,6 +1074,7 @@ pub trait PanelState {
                     match cc.app.con.verb_store.search_sel_info(
                         &invocation.name,
                         sel_info,
+                        Some(self.get_type()),
                     ) {
                         PrefixSearchResult::NoMatch => {
                             Status::new("No matching verb (*?* for the list of verbs)", true)
@@ -988,7 +1105,7 @@ pub trait PanelState {
         verb: &Verb,
         invocation: &VerbInvocation,
         sel_info: SelInfo<'_>,
-        _cc: &CmdContext,
+        cc: &CmdContext,
         app_state: &AppState,
     ) -> Status {
         if sel_info.count_paths() > 1 {
@@ -1010,6 +1127,7 @@ pub trait PanelState {
                     sel_info,
                     app_state,
                     invocation,
+                    cc.app.con,
                 ),
                 false,
             )
@@ -1030,10 +1148,4 @@ pub fn get_arg<T: Copy + FromStr>(
         .unwrap_or(default)
 }
 
-pub fn initial_mode(con: &AppContext) -> Mode {
-    if con.modal {
-        Mode::Command
-    } else {
-        Mode::Input
-    }
-}
+

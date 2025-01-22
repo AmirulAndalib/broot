@@ -10,11 +10,10 @@ use {
 custom_error! {pub ProgramError
     AmbiguousVerbName {name: String} = "Ambiguous name: More than one verb matches {name:?}",
     ArgParse {bad: String, valid: String} = "{bad:?} can't be parsed (valid values: {valid:?})",
-    Conf {source: ConfError} = "Bad configuration: {source}",
     ConfFile {path:String, details: ConfError} = "Bad configuration file {path:?} : {details}",
+    Conf {source: ConfError} = "Bad configuration: {source}",
     ImageError {source: ImageError } = "{source}",
     InternalError {details: String} = "Internal error: {details}", // should not happen
-    InvalidGlobError {pattern: String} = "Invalid glob: {pattern}",
     Io {source: io::Error} = "IO Error : {source}",
     LaunchError {program: String, source: io::Error} = "Unable to launch {program}: {source}",
     Lfs {details: String} = "Failed to fetch mounts: {details}",
@@ -24,6 +23,7 @@ custom_error! {pub ProgramError
     Svg {source: SvgError} = "SVG error: {source}",
     SyntectCrashed { details: String } = "Syntect crashed on {details:?}",
     Termimad {source: termimad::Error} = "Termimad Error : {source}",
+    Trash {message: String} = "Trash error: {message}",
     TreeBuild {source: TreeBuildError} = "{source}",
     UnknowShell {shell: String} = "Unknown shell: {shell}",
     UnknownVerb {name: String} = "No verb matches {name:?}",
@@ -34,7 +34,7 @@ custom_error! {pub ProgramError
     ZeroLenFile = "File seems empty",
 }
 
-custom_error!{pub ShellInstallError
+custom_error! {pub ShellInstallError
     Io {source: io::Error, when: String} = "IO Error {source} on {when}",
 }
 impl ShellInstallError {
@@ -43,27 +43,37 @@ impl ShellInstallError {
             Self::Io { source, .. } => {
                 if source.kind() == io::ErrorKind::PermissionDenied {
                     true
-                } else { cfg!(windows) && source.raw_os_error().unwrap_or(0) == 1314 }
+                } else {
+                    cfg!(windows) && source.raw_os_error().unwrap_or(0) == 1314
+                }
             }
         }
     }
 }
 pub trait IoToShellInstallError<Ok> {
-    fn context(self, f: &dyn Fn() -> String) -> Result<Ok, ShellInstallError>;
+    fn context(
+        self,
+        f: &dyn Fn() -> String,
+    ) -> Result<Ok, ShellInstallError>;
 }
 impl<Ok> IoToShellInstallError<Ok> for Result<Ok, io::Error> {
-    fn context(self, f: &dyn Fn() -> String) -> Result<Ok, ShellInstallError> {
-        self.map_err(|source| ShellInstallError::Io {
-            source, when: f()
-        })
+    fn context(
+        self,
+        f: &dyn Fn() -> String,
+    ) -> Result<Ok, ShellInstallError> {
+        self.map_err(|source| ShellInstallError::Io { source, when: f() })
     }
 }
 
 custom_error! {pub TreeBuildError
-    NotADirectory { path: String } = "Not a directory: {path}",
     FileNotFound { path: String } = "File not found: {path}",
     Interrupted = "Task Interrupted",
+    InvalidUtf8 { path: String } = "Invalid UTF-8 in {path}",
+    //Io {source: io::Error} = "IO Error : {source}",
+    NotADirectory { path: String } = "Not a directory: {path}",
+    NotARootDescendant { path: String } = "Not a descendant of the root: {path}",
     TooManyMatches { max: usize } = "Too many matches (max allowed: {max})",
+    UnconsistentData { message:String } = "Unconsistent data: {message}", // maybe refresh ?
 }
 
 custom_error! {pub ConfError
@@ -87,6 +97,8 @@ custom_error! {pub ConfError
     InvalidThreadsCount { count: usize }            = "invalid threads count: {count}",
     InvalidDefaultFlags { flags: String }           = "invalid default flags: {flags:?}",
     InvalidSyntaxTheme { name: String }             = "invalid syntax theme: {name:?}",
+    InvalidGlobPattern { pattern: String }          = "invalid glob pattern: {pattern:?}",
+    InvalidVerbName { name: String }                = "invalid verb name: {name:?} (must either not start with a special character or be only made of special characters)",
 }
 
 // error which can be raised when parsing a pattern the user typed
@@ -116,4 +128,12 @@ custom_error! {pub SvgError
     Io {source: io::Error} = "IO Error : {source}",
     Internal { message: &'static str } = "Internal error : {message}",
     Svg {source: resvg::usvg::Error} = "SVG Error: {source}",
+}
+
+custom_error! {pub PreviewTransformerError
+    InvalidInput = "Invalid input",
+    NoOutput = "No output",
+    Io {source: io::Error} = "IO Error : {source}",
+    ProcessInterrupted = "Process interrupted",
+    ProcessFailed { code: i32 } = "Execution failed with code {code}",
 }

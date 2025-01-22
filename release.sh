@@ -1,12 +1,12 @@
 # build a new release of broot
 # This isn't used for normal compilation (see https://dystroy.org/broot for instruction)
-# but for the building of the official releases
+# but for building the official releases
 version=$(./version.sh)
 
 echo "Building release $version"
 
 # make the build directory and compile for all targets
-./compile-all-targets.sh
+./build-all-targets.sh
 
 # add the readme and changelog in the build directory
 echo "This is broot. More info and installation instructions on https://dystroy.org/broot" > build/README.md
@@ -27,5 +27,8 @@ zip -r "../broot_$version.zip" *
 cd -
 
 # copy it to releases folder
-mkdir releases
-cp "broot_$version.zip" releases
+mkdir -p releases/broot_${version}
+cp "broot_$version.zip" releases/broot_${version}
+
+# create zip files for `cargo binstall broot`
+./release-for-binstall.sh

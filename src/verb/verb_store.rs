@@ -19,12 +19,15 @@ use {
 /// Provide access to the verbs:
 /// - the built-in ones
 /// - the user defined ones
+///
 /// A user defined verb can replace a built-in.
+///
 /// When the user types some keys, we select a verb
 /// - if the input exactly matches a shortcut or the name
 /// - if only one verb name starts with the input
 pub struct VerbStore {
     verbs: Vec<Verb>,
+    unbound_keys: Vec<KeyCombination>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,17 +39,30 @@ pub enum PrefixSearchResult<'v, T> {
 
 impl VerbStore {
     pub fn new(conf: &mut Conf) -> Result<Self, ConfError> {
-        let mut store = Self { verbs: Vec::new() };
+        let mut store = Self { verbs: Vec::new(), unbound_keys: Vec::new() };
         for vc in &conf.verbs {
-            store.add_from_conf(vc)?;
+            if let Err(e) = store.add_from_conf(vc) {
+                eprintln!("Invalid verb configuration: {}", e);
+                warn!("Faulty parsed configuration: {:#?}", vc);
+                if let Ok(toml) = toml::to_string(&vc) {
+                    eprintln!("Faulty configuration:\n{}", toml);
+                }
+                eprintln!("Configuration files:");
+                for path in &conf.files {
+                    eprintln!("  - {}", path.display());
+                }
+            }
         }
-        store.add_builtin_verbs(); // at the end so that we can override them
+        store.add_builtin_verbs()?; // at the end so that we can override them
+        for key in store.unbound_keys.clone() {
+            store.unbind_key(key)?;
+        }
         Ok(store)
     }
 
     fn add_builtin_verbs(
         &mut self,
-    ) {
+    ) -> Result<(), ConfError> {
         use super::{ExternalExecutionMode::*, Internal::*};
         self.add_internal(escape).with_key(key!(esc));
 
@@ -65,12 +81,16 @@ impl VerbStore {
         self.add_internal(input_go_word_right).no_doc();
 
         // arrow keys bindings
-        self.add_internal(back).with_key(key!(left));
-        self.add_internal(open_stay).with_key(key!(right));
+        self.add_internal(back);
+        self.add_internal(open_stay);
         self.add_internal(line_down).with_key(key!(down)).with_key(key!('j'));
         self.add_internal(line_up).with_key(key!(up)).with_key(key!('k'));
 
+        // changing display
         self.add_internal(set_syntax_theme);
+        self.add_internal(apply_flags).with_name("apply_flags")?;
+        self.add_internal(set_panel_width);
+        self.add_internal(default_layout);
 
         // those two operations are mapped on ALT-ENTER, one
         // for directories and the other one for the other files
@@ -135,9 +155,24 @@ impl VerbStore {
             StayInBroot,
         )
             .with_shortcut("cpp");
+        #[cfg(feature = "trash")]
+        self.add_internal(trash);
+        #[cfg(feature = "trash")]
+        self.add_internal(open_trash)
+            .with_shortcut("ot");
+        #[cfg(feature = "trash")]
+        self.add_internal(restore_trashed_file)
+            .with_shortcut("rt");
+        #[cfg(feature = "trash")]
+        self.add_internal(delete_trashed_file)
+            .with_shortcut("dt");
+        #[cfg(feature = "trash")]
+        self.add_internal(purge_trash)
+            .with_shortcut("et");
         #[cfg(unix)]
         self.add_internal(filesystems)
             .with_shortcut("fs");
+        self.add_internal(focus_staging_area_no_open);
         // :focus is also hardcoded on Enter on directories
         // but ctrl-f is useful for focusing on a file's parent
         // (and keep the filter)
@@ -256,11 +291,13 @@ impl VerbStore {
         self.add_internal(select_first);
         self.add_internal(select_last);
         self.add_internal(select);
+        self.add_internal(show);
         self.add_internal(clear_stage).with_shortcut("cls");
         self.add_internal(stage)
             .with_key(key!('+'));
         self.add_internal(unstage)
             .with_key(key!('-'));
+        self.add_internal(stage_all_directories);
         self.add_internal(stage_all_files)
             .with_key(key!(ctrl-a));
         self.add_internal(toggle_stage)
@@ -285,7 +322,7 @@ impl VerbStore {
         self.add_internal(toggle_dates).with_shortcut("dates");
         self.add_internal(toggle_device_id).with_shortcut("dev");
         self.add_internal(toggle_files).with_shortcut("files");
-        self.add_internal(toggle_git_ignore)
+        self.add_internal(toggle_ignore)
             .with_key(key!(alt-i))
             .with_shortcut("gi");
         self.add_internal(toggle_git_file_info).with_shortcut("gf");
@@ -298,9 +335,16 @@ impl VerbStore {
         self.add_internal(toggle_perm).with_shortcut("perm");
         self.add_internal(toggle_sizes).with_shortcut("sizes");
         self.add_internal(toggle_trim_root);
-        self.add_internal(trash);
-        self.add_internal(total_search).with_key(key!(ctrl-s));
+        self.add_internal(total_search);
+        self.add_internal(search_again).with_key(key!(ctrl-s));
         self.add_internal(up_tree).with_shortcut("up");
+
+        self.add_internal_with_args(move_panel_divider, "0 1").with_key(key!(alt-'>'));
+        self.add_internal_with_args(move_panel_divider, "0 -1").with_key(key!(alt-'<'));
+
+        self.add_internal(clear_output);
+        self.add_internal(write_output);
+        Ok(())
     }
 
     fn build_add_internal(
@@ -321,6 +365,24 @@ impl VerbStore {
         internal: Internal,
     ) -> &mut Verb {
         self.build_add_internal(internal, false)
+    }
+
+    fn add_internal_with_args(
+        &mut self,
+        internal: Internal,
+        args: &str,
+    ) -> &mut Verb {
+        let command =
+            format!("{} {}", internal.name(), args);
+        let execution = VerbExecution::Internal(
+            InternalExecution {
+                internal,
+                bang: false,
+                arg: Some(args.to_string()),
+            }
+        );
+        let description = VerbDescription::from_text(command.clone());
+        self.add_verb(Some(&command), execution, description).unwrap()
     }
 
      fn add_internal_bang(
@@ -372,6 +434,23 @@ impl VerbStore {
                 details: "You can't simultaneously have leave_broot=false and from_shell=true".to_string(),
             });
         }
+
+        // we accept both key and keys. We merge both here
+        let mut unchecked_keys = vc.keys.clone();
+        if let Some(key) = &vc.key {
+            unchecked_keys.push(key.clone());
+        }
+        let mut checked_keys = Vec::new();
+        for key in &unchecked_keys {
+            let key = crokey::parse(key)?;
+            if keys::is_reserved(key) {
+                return Err(ConfError::ReservedKey {
+                    key: keys::KEY_FORMAT.to_string(key)
+                });
+            }
+            checked_keys.push(key);
+        }
+
         let invocation = vc.invocation.clone().filter(|i| !i.is_empty());
         let internal = vc.internal.as_ref().filter(|i| !i.is_empty());
         let external = vc.external.as_ref().filter(|i| !i.is_empty());
@@ -426,9 +505,12 @@ impl VerbStore {
                 sequence: Sequence::new(s, cmd_separator),
             }),
             _ => {
-                return Err(ConfError::InvalidVerbConf {
-                    details: "You must define either internal, external or cmd".to_string(),
-                });
+                // there's no execution, this 'verbconf' is supposed to be dedicated to
+                // unbind keys
+                for key in checked_keys {
+                    self.unbound_keys.push(key);
+                }
+                return Ok(());
             }
         };
         let description = vc
@@ -441,21 +523,6 @@ impl VerbStore {
             execution,
             description,
         )?;
-        // we accept both key and keys. We merge both here
-        let mut unchecked_keys = vc.keys.clone();
-        if let Some(key) = &vc.key {
-            unchecked_keys.push(key.clone());
-        }
-        let mut checked_keys = Vec::new();
-        for key in &unchecked_keys {
-            let key = crokey::parse(key)?;
-            if keys::is_reserved(key) {
-                return Err(ConfError::ReservedKey {
-                    key: keys::KEY_FORMAT.to_string(key)
-                });
-            }
-            checked_keys.push(key);
-        }
         for extension in &vc.extensions {
             verb.file_extensions.push(extension.clone());
         }
@@ -469,9 +536,29 @@ impl VerbStore {
             verb.auto_exec = false;
         }
         if !vc.panels.is_empty() {
-            verb.panels = vc.panels.clone();
+            verb.panels.clone_from(&vc.panels);
         }
         verb.selection_condition = vc.apply_to;
+        Ok(())
+    }
+
+    pub fn unbind_key(
+        &mut self,
+        key: KeyCombination,
+    ) -> Result<(), ConfError> {
+        debug!("unbinding key {:?}", key);
+        for verb in &mut self.verbs {
+            verb.keys.retain(|&k| k != key);
+        }
+        Ok(())
+    }
+    pub fn unbind_name(
+        &mut self,
+        name: &str,
+    ) -> Result<(), ConfError> {
+        for verb in &mut self.verbs {
+            verb.names.retain(|n| n != name);
+        }
         Ok(())
     }
 
@@ -479,15 +566,17 @@ impl VerbStore {
         &'v self,
         prefix: &str,
         sel_info: SelInfo<'_>,
-    ) -> PrefixSearchResult<'v, &Verb> {
-        self.search(prefix, Some(sel_info))
+        panel_state_type: Option<PanelStateType>,
+    ) -> PrefixSearchResult<'v, &'v Verb> {
+        self.search(prefix, Some(sel_info), true, panel_state_type)
     }
 
     pub fn search_prefix<'v>(
         &'v self,
         prefix: &str,
-    ) -> PrefixSearchResult<'v, &Verb> {
-        self.search(prefix, None)
+        panel_state_type: Option<PanelStateType>,
+    ) -> PrefixSearchResult<'v, &'v Verb> {
+        self.search(prefix, None, true, panel_state_type)
     }
 
     /// Return either the only match, or None if there's not
@@ -496,8 +585,9 @@ impl VerbStore {
         &'v self,
         prefix: &str,
         sel_info: SelInfo<'_>,
+        panel_state_type: Option<PanelStateType>,
     ) -> Option<&'v Verb> {
-        match self.search_sel_info(prefix, sel_info) {
+        match self.search_sel_info(prefix, sel_info, panel_state_type) {
             PrefixSearchResult::Match(_, verb) => Some(verb),
             _ => None,
         }
@@ -507,7 +597,9 @@ impl VerbStore {
         &'v self,
         prefix: &str,
         sel_info: Option<SelInfo>,
-    ) -> PrefixSearchResult<'v, &Verb> {
+        short_circuit: bool,
+        panel_state_type: Option<PanelStateType>,
+    ) -> PrefixSearchResult<'v, &'v Verb> {
         let mut found_index = 0;
         let mut nb_found = 0;
         let mut completions: Vec<&str> = Vec::new();
@@ -516,6 +608,11 @@ impl VerbStore {
         for (index, verb) in self.verbs.iter().enumerate() {
             if let Some(sel_info) = sel_info {
                 if !sel_info.is_accepted_by(verb.selection_condition) {
+                    continue;
+                }
+            }
+            if let Some(panel_state_type) = panel_state_type {
+                if !verb.can_be_called_in_panel(panel_state_type) {
                     continue;
                 }
             }
@@ -532,7 +629,7 @@ impl VerbStore {
             }
             for name in &verb.names {
                 if name.starts_with(prefix) {
-                    if name == prefix {
+                    if short_circuit && name == prefix {
                         return PrefixSearchResult::Match(name, verb);
                     }
                     found_index = index;
@@ -556,7 +653,7 @@ impl VerbStore {
     ) -> Option<String> {
         for verb in &self.verbs {
             if verb.get_internal() == Some(internal) && verb.selection_condition.accepts_selection_type(stype) {
-                return verb.keys.get(0).map(|&k| KEY_FORMAT.to_string(k));
+                return verb.keys.first().map(|&k| KEY_FORMAT.to_string(k));
             }
         }
         None
@@ -568,7 +665,7 @@ impl VerbStore {
     ) -> Option<String> {
         for verb in &self.verbs {
             if verb.get_internal() == Some(internal) {
-                return verb.keys.get(0).map(|&k| KEY_FORMAT.to_string(k));
+                return verb.keys.first().map(|&k| KEY_FORMAT.to_string(k));
             }
         }
         None
@@ -582,4 +679,10 @@ impl VerbStore {
         &self.verbs[id]
     }
 
+}
+
+#[test]
+fn check_builtin_verbs() {
+    let mut conf = Conf::default();
+    let _store = VerbStore::new(&mut conf).unwrap();
 }

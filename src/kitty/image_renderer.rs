@@ -24,8 +24,14 @@ use {
         RgbImage,
         RgbaImage,
     },
+    lru::LruCache,
+    rustc_hash::FxBuildHasher,
+    serde::Deserialize,
     std::{
+        fs::File,
         io::{self, Write},
+        num::NonZeroUsize,
+        path::{Path, PathBuf},
     },
     tempfile,
     termimad::{fill_bg, Area},
@@ -35,18 +41,29 @@ use {
 ///
 /// Note that I didn't test yet the named shared memory
 /// solution offered by kitty.
-#[derive(Debug)]
+///
+/// Documentation:
+///  https://sw.kovidgoyal.net/kitty/graphics-protocol/#the-transmission-medium
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TransmissionMedium {
     /// write a temp file, then give its path to kitty
     /// in the payload of the escape sequence. It's quite
     /// fast on SSD but a big downside is that it doesn't
     /// work if you're distant
+    #[default]
     TempFile,
     /// send the whole rgb or rgba data, encoded in base64,
     /// in the payloads of several escape sequence (each one
     /// containing at most 4096 bytes). Works if broot runs
     /// on remote.
     Chunks,
+}
+
+#[derive(Debug, Clone)]
+pub struct KittyImageRendererOptions {
+    pub transmission_medium: TransmissionMedium,
+    pub kept_temp_files: NonZeroUsize,
 }
 
 enum ImageData<'i> {
@@ -68,7 +85,7 @@ impl<'i> From<&'i DynamicImage> for ImageData<'i> {
         }
     }
 }
-impl<'i> ImageData<'i> {
+impl ImageData<'_> {
     fn kitty_format(&self) -> &'static str {
         match self {
             Self::RgbaRef(_) => "32",
@@ -100,7 +117,10 @@ pub struct KittyImageRenderer {
     cell_width: u32,
     cell_height: u32,
     next_id: usize,
-    transmission_medium: TransmissionMedium,
+    options: KittyImageRendererOptions,
+    /// paths of temp files which have been written, with key
+    /// being the input image path
+    temp_files: LruCache<String, PathBuf, FxBuildHasher>,
 }
 
 /// An image prepared for a precise area on screen
@@ -166,18 +186,15 @@ impl<'i> KittyImage<'i> {
     pub fn print_with_temp_file(
         &self,
         w: &mut W,
+        temp_file: Option<File>, // if None, no need to write it
+        temp_file_path: &Path,
     ) -> Result<(), ProgramError> {
-        let (mut temp_file, path) = tempfile::Builder::new()
-            .prefix("broot-img-preview")
-            .tempfile()?
-            .keep()
-            .map_err(|_| io::Error::new(
-                io::ErrorKind::Other,
-                "temp file can't be kept",
-            ))?;
-        temp_file.write_all(self.data.bytes())?;
-        temp_file.flush()?;
-        let path = path.to_str()
+        if let Some(mut temp_file) = temp_file {
+            temp_file.write_all(self.data.bytes())?;
+            temp_file.flush()?;
+            debug!("file len: {}", temp_file.metadata().unwrap().len());
+        }
+        let path = temp_file_path.to_str()
             .ok_or_else(|| io::Error::new(
                 io::ErrorKind::Other,
                 "Path can't be converted to UTF8",
@@ -196,25 +213,37 @@ impl<'i> KittyImage<'i> {
             self.area.height,
             encoded_path,
         )?;
-        debug!("file len: {}", temp_file.metadata().unwrap().len());
         Ok(())
     }
 }
 
 impl KittyImageRenderer {
     /// Called only once (at most) by the KittyManager
-    pub fn new() -> Option<Self> {
+    pub fn new(
+        options: KittyImageRendererOptions,
+    ) -> Option<Self> {
         if !is_kitty_graphics_protocol_supported() {
             return None;
         }
+        let hasher = FxBuildHasher;
+        let temp_files = LruCache::with_hasher(options.kept_temp_files, hasher);
         cell_size_in_pixels()
             .ok()
             .map(|(cell_width, cell_height)| Self {
                 cell_width,
                 cell_height,
                 next_id: 1,
-                transmission_medium: TransmissionMedium::Chunks,
+                options,
+                temp_files,
             })
+    }
+    pub fn delete_temp_files(&mut self) {
+        for (_, temp_file_path) in self.temp_files.into_iter() {
+            debug!("removing temp file: {:?}", temp_file_path);
+            if let Err(e) = std::fs::remove_file(temp_file_path) {
+                error!("failed to remove temp file: {:?}", e);
+            }
+        }
     }
     /// return a new image id
     fn new_id(&mut self) -> usize {
@@ -228,6 +257,7 @@ impl KittyImageRenderer {
         &mut self,
         w: &mut W,
         src: &DynamicImage,
+        src_path: &Path,
         area: &Area,
         bg: Color,
     ) -> Result<usize, ProgramError> {
@@ -239,9 +269,48 @@ impl KittyImageRenderer {
         }
 
         let img = KittyImage::new(src, area, self);
-        debug!("transmission medium: {:?}", self.transmission_medium);
-        match self.transmission_medium {
-            TransmissionMedium::TempFile => img.print_with_temp_file(w)?,
+        debug!("transmission medium: {:?}", self.options.transmission_medium);
+        w.flush()?;
+        match self.options.transmission_medium {
+            TransmissionMedium::TempFile => {
+                let temp_file_key = format!(
+                    "{:?}-{}x{}",
+                    src_path,
+                    img.img_width,
+                    img.img_height,
+                );
+                let mut old_path = None;
+                if let Some(cached_path) = self.temp_files.pop(&temp_file_key) {
+                    if cached_path.exists() {
+                        old_path = Some(cached_path);
+                    }
+                }
+                let temp_file_path = if let Some(temp_file_path) = old_path {
+                    // the temp file is still there
+                    img.print_with_temp_file(w, None, &temp_file_path)?;
+                    temp_file_path
+                } else {
+                    // either the temp file itself has been removed (unlikely), the temp
+                    // cache entry has been removed, or we just never viewed this image
+                    // with this size before
+                    let (temp_file, path) = tempfile::Builder::new()
+                        .prefix("broot-img-preview")
+                        .tempfile()?
+                        .keep()
+                        .map_err(|_| io::Error::new(
+                            io::ErrorKind::Other,
+                            "temp file can't be kept",
+                        ))?;
+                    img.print_with_temp_file(w, Some(temp_file), &path)?;
+                    path
+                };
+                if let Some((_, old_path)) = self.temp_files.push(temp_file_key, temp_file_path) {
+                    debug!("removing temp file: {:?}", &old_path);
+                    if let Err(e) = std::fs::remove_file(&old_path) {
+                        error!("failed to remove temp file: {:?}", e);
+                    }
+                }
+            }
             TransmissionMedium::Chunks => img.print_with_chunks(w)?,
         }
         Ok(img.id)

@@ -2,54 +2,71 @@
 # More info at https://github.com/Canop/bacon
 
 default_job = "check"
+env.CARGO_TERM_COLOR = "always"
 
 [jobs]
 
 [jobs.check-all]
-command = ["cargo", "check", "--all-targets", "--color", "always"]
+command = ["cargo", "check", "--all-targets"]
 need_stdout = false
 watch = ["tests", "benches", "examples"]
+
+[jobs.bacon-ls]
+command = [ "cargo", "check", "--message-format", "json-diagnostic-rendered-ansi" ]
+analyzer = "cargo_json"
+need_stdout = true
+
+[exports.cargo-json-spans]
+auto = true
+exporter = "analyzer"
+line_format = "{diagnostic.level}:{span.file_name}:{span.line_start}:{span.line_end}:{diagnostic.message}"
+path = "bacon-analyzzzer.json"
 
 [jobs.check]
 command = [
 	"cargo", "check",
-	"--color", "always",
-	"--features", "clipboard",
+	"--features", "clipboard kitty-csi-check trash",
 ]
 need_stdout = false
 watch = ["benches"]
+
+[jobs.miri]
+command = ["cargo", "+nightly", "miri", "run"]
+need_stdout = true
 
 [jobs.win]
 command = ["cross", "build", "--target", "x86_64-pc-windows-gnu", "--release", "--features", "clipboard"]
 
 [jobs.light]
-command = ["cargo", "check", "--color", "always"]
+command = ["cargo", "check"]
 need_stdout = false
 
 [jobs.clippy]
 command = [
 	"cargo", "clippy",
-	"--color", "always",
 	"--",
 	"-A", "clippy::bool_to_int_with_if",
 	"-A", "clippy::collapsible_else_if",
 	"-A", "clippy::collapsible_if",
 	"-A", "clippy::derive_partial_eq_without_eq",
+	"-A", "clippy::if_same_then_else",
 	"-A", "clippy::len_without_is_empty",
+	"-A", "clippy::manual_clamp",
 	"-A", "clippy::manual_range_contains",
 	"-A", "clippy::manual_unwrap_or",
 	"-A", "clippy::match_like_matches_macro",
 	"-A", "clippy::module_inception",
+	"-A", "clippy::needless_bool",
+	"-A", "clippy::needless_range_loop",
 	"-A", "clippy::neg_multiply",
 	"-A", "clippy::vec_init_then_push",
-	"-A", "clippy::if_same_then_else",
-	"-A", "clippy::manual_clamp",
-	"-A", "clippy::needless_bool",
+	"-W", "clippy::explicit_iter_loop",
+	"-A", "clippy::unnecessary_map_or",
 ]
 need_stdout = false
 
 [jobs.test]
-command = ["cargo", "test", "--color", "always"]
+command = ["cargo", "test"]
 need_stdout = true
 
 [keybindings]

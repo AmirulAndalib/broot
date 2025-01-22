@@ -5,7 +5,10 @@ use {
     once_cell::sync::Lazy,
     std::path::Path,
     syntect::{
-        easy::HighlightLines,
+        easy::{
+            HighlightLines,
+            HighlightOptions,
+        },
         parsing::SyntaxSet,
         highlighting::{Theme, ThemeSet},
     },
@@ -23,7 +26,10 @@ pub struct Syntaxer {
 impl Default for Syntaxer {
     fn default() -> Self {
         Self {
-            syntax_set: time!(Debug, syntect::dumps::from_binary(SYNTAXES)),
+            syntax_set: time!(
+                Debug,
+                syntect::dumps::from_uncompressed_data(SYNTAXES).unwrap()
+            ),
             theme_set: ThemeSet::load_defaults(),
         }
     }
@@ -48,7 +54,10 @@ impl Syntaxer {
                 let theme = con.syntax_theme.unwrap_or_default();
                 let theme = self.theme_set.themes.get(theme.syntect_name())
                     .unwrap_or_else(|| self.theme_set.themes.iter().next().unwrap().1);
-                HighlightLines::new(syntax, theme)
+                let options = HighlightOptions {
+                    ignore_errors: true,
+                };
+                HighlightLines::new(syntax, theme, options)
             })
     }
 }

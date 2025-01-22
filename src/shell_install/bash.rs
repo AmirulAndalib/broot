@@ -7,6 +7,7 @@
 //! - a function declaration script in ~/.local/share/broot/launcher/bash/br/1
 //! - a link to that script in ~/.config/broot/launcher/bash/br/1
 //! - a line to source the link in ~/.bashrc and ~/.zshrc
+//!
 //! (exact paths depend on XDG variables)
 
 use {
@@ -53,11 +54,11 @@ function br {
 }
 "#;
 
-const MD_NO_SOURCING: &str = r#"
+const MD_NO_SOURCING: &str = r"
 I found no sourcing file for the bash/zsh family.
 If you're using bash or zsh, then installation isn't complete:
 the br function initialization script won't be sourced unless you source it yourself.
-"#;
+";
 
 pub fn get_script() -> &'static str {
     BASH_FUNC

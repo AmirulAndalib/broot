@@ -18,6 +18,7 @@ nav:
                 - Verbs & Commands: verbs.md
                 - Panels: panels.md
                 - Staging Area: staging-area.md
+                - Trash: trash.md
                 - Tree export: export.md
                 - Tips & tricks: tricks.md
                 - Common file operations: file-operations.md
@@ -35,10 +36,12 @@ extra_css:
         - css/extra.css
         - css/tab-langs.css
         - css/link-to-dystroy.css
+        - css/details.css
 
 extra_javascript:
         - js/tab-langs.js
         - js/link-to-dystroy.js
+        - js/details.js
 
 theme:
         name: null

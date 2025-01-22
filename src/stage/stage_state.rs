@@ -57,7 +57,7 @@ impl StageState {
             filtered_stage,
             scroll: 0,
             tree_options,
-            mode: initial_mode(con),
+            mode: con.initial_mode(),
             page_height: 0,
             stage_sum: StageSum::default(),
         }
@@ -252,7 +252,7 @@ impl PanelState for StageState {
             let state = Box::new(StageState {
                 filtered_stage: self.filtered_stage.clone(),
                 scroll: self.scroll,
-                mode: initial_mode(con),
+                mode: con.initial_mode(),
                 tree_options: new_options,
                 page_height: self.page_height,
                 stage_sum: self.stage_sum,
@@ -443,6 +443,7 @@ impl PanelState for StageState {
     fn on_internal(
         &mut self,
         w: &mut W,
+        invocation_parser: Option<&InvocationParser>,
         internal_exec: &InternalExecution,
         input_invocation: Option<&VerbInvocation>,
         trigger_type: TriggerType,
@@ -493,8 +494,24 @@ impl PanelState for StageState {
                     CmdResult::error("you must select a path to unstage")
                 }
             }
+            Internal::trash => {
+                info!("trash {} staged files", app_state.stage.len());
+
+                #[cfg(feature = "trash")]
+                match trash::delete_all(app_state.stage.paths()) {
+                    Ok(()) => CmdResult::RefreshState { clear_cache: true },
+                    Err(e) => {
+                        warn!("trash error: {:?}", &e);
+                        CmdResult::DisplayError(format!("trash error: {:?}", &e))
+                    }
+                }
+
+                #[cfg(not(feature = "trash"))]
+                CmdResult::DisplayError("feature not enabled or platform does not support trash".into())
+            }
             _ => self.on_internal_generic(
                 w,
+                invocation_parser,
                 internal_exec,
                 input_invocation,
                 trigger_type,

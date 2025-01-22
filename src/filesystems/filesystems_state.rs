@@ -93,7 +93,7 @@ impl FilesystemState {
             page_height: 0,
             tree_options,
             filtered: None,
-            mode: initial_mode(con),
+            mode: con.initial_mode(),
         })
     }
     pub fn count(&self) -> usize {
@@ -474,6 +474,7 @@ impl PanelState for FilesystemState {
     fn on_internal(
         &mut self,
         w: &mut W,
+        invocation_parser: Option<&InvocationParser>,
         internal_exec: &InternalExecution,
         input_invocation: Option<&VerbInvocation>,
         trigger_type: TriggerType,
@@ -515,7 +516,7 @@ impl PanelState for FilesystemState {
                 let dam = Dam::unlimited();
                 let mut tree_options = self.tree_options();
                 tree_options.show_root_fs = true;
-                CmdResult::from_optional_state(
+                CmdResult::from_optional_browser_state(
                     BrowserState::new(
                         self.no_opt_selected_path().to_path_buf(),
                         tree_options,
@@ -578,6 +579,7 @@ impl PanelState for FilesystemState {
             open_leave => CmdResult::PopStateAndReapply,
             _ => self.on_internal_generic(
                 w,
+                invocation_parser,
                 internal_exec,
                 input_invocation,
                 trigger_type,

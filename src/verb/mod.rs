@@ -8,6 +8,7 @@ mod internal;
 mod internal_execution;
 pub mod internal_focus;
 pub mod internal_select;
+pub mod internal_path;
 mod invocation_parser;
 mod sequence_execution;
 mod verb;
@@ -15,6 +16,7 @@ mod verb_description;
 mod verb_execution;
 mod verb_invocation;
 mod verb_store;
+mod write;
 
 pub use {
     arg_def::*,
@@ -33,6 +35,7 @@ pub use {
     verb_execution::VerbExecution,
     verb_invocation::*,
     verb_store::{PrefixSearchResult, VerbStore},
+    write::*,
 };
 use {
     lazy_regex::*,

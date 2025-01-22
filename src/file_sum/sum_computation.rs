@@ -5,27 +5,35 @@ use {
         path::*,
         task_sync::Dam,
     },
-    ahash::AHashMap,
-    crossbeam::channel,
-    rayon::{ThreadPool, ThreadPoolBuilder},
+    rayon::{
+        ThreadPool,
+        ThreadPoolBuilder,
+    },
+    rustc_hash::{
+        FxHashMap,
+    },
     std::{
         convert::TryInto,
         fs,
-        path::{Path, PathBuf},
+        path::{
+            Path,
+            PathBuf,
+        },
         sync::{
-            atomic::{AtomicIsize, Ordering},
+            atomic::{
+                AtomicIsize,
+                Ordering,
+            },
             Arc,
             Mutex,
         },
     },
+    termimad::crossbeam::channel,
 };
 
 #[cfg(unix)]
 use {
-    fnv::FnvHashSet,
-    std::{
-        os::unix::fs::MetadataExt,
-    },
+    std::os::unix::fs::MetadataExt,
 };
 
 struct DirSummer {
@@ -35,20 +43,13 @@ struct DirSummer {
 
 /// a node id, taking the device into account to be sure to discriminate
 /// nodes with the same inode but on different devices
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 struct NodeId {
     /// inode number
     inode: u64,
     /// device number
     dev: u64,
-}
-
-#[inline(always)]
-fn is_ignored(path: &Path, special_paths: &[SpecialPath]) -> bool {
-    match special_paths.find(path) {
-        SpecialHandling::NoEnter | SpecialHandling::Hide => true,
-        SpecialHandling::None | SpecialHandling::Enter | SpecialHandling::NoHide => false,
-    }
 }
 
 impl DirSummer {
@@ -69,13 +70,13 @@ impl DirSummer {
     pub fn compute_dir_sum(
         &mut self,
         path: &Path,
-        cache: &mut AHashMap<PathBuf, FileSum>,
+        cache: &mut FxHashMap<PathBuf, FileSum>,
         dam: &Dam,
         con: &AppContext,
     ) -> Option<FileSum> {
         let threads_count = self.thread_count;
 
-        if is_ignored(path, &con.special_paths) {
+        if con.special_paths.sum(path) == Directive::Never {
             return Some(FileSum::zero());
         }
 
@@ -84,14 +85,14 @@ impl DirSummer {
             debug!("not summing in /proc");
             return Some(FileSum::zero());
         }
-        if path.starts_with("/run") && ! path.starts_with("/run/media") {
+        if path.starts_with("/run") && !path.starts_with("/run/media") {
             debug!("not summing in /run");
             return Some(FileSum::zero());
         }
 
         // to avoid counting twice a node, we store their id in a set
         #[cfg(unix)]
-        let nodes = Arc::new(Mutex::new(FnvHashSet::<NodeId>::default()));
+        let nodes = Arc::new(Mutex::new(rustc_hash::FxHashSet::<NodeId>::default()));
 
         // busy is the number of directories which are either being processed or queued
         // We use this count to determine when threads can stop waiting for tasks
@@ -102,10 +103,7 @@ impl DirSummer {
         // A None means there's nothing left and the thread may send its result and stop
         let (dirs_sender, dirs_receiver) = channel::unbounded();
 
-        let special_paths: Vec<SpecialPath> = con.special_paths.iter()
-            .filter(|sp| sp.can_have_matches_in(path))
-            .cloned()
-            .collect();
+        let special_paths = con.special_paths.reduce(path);
 
         // the first level is managed a little differently: we look at the cache
         // before adding. This enables faster computations in two cases:
@@ -117,7 +115,7 @@ impl DirSummer {
                     if md.is_dir() {
                         let entry_path = e.path();
 
-                        if is_ignored(&entry_path, &special_paths) {
+                        if con.special_paths.sum(&entry_path) == Directive::Never {
                             debug!("not summing special path {:?}", entry_path);
                             continue;
                         }
@@ -133,7 +131,6 @@ impl DirSummer {
                         busy += 1;
                         dirs_sender.send(Some(entry_path)).unwrap();
                     } else {
-
                         #[cfg(unix)]
                         if md.nlink() > 1 {
                             let mut nodes = nodes.lock().unwrap();
@@ -146,7 +143,6 @@ impl DirSummer {
                                 continue;
                             }
                         }
-
                     }
                     sum += md_sum(&md);
                 }
@@ -185,10 +181,9 @@ impl DirSummer {
                             for e in entries.flatten() {
                                 if let Ok(md) = e.metadata() {
                                     if md.is_dir() {
-
                                         let path = e.path();
 
-                                        if is_ignored(&path, &special_paths) {
+                                        if special_paths.sum(&path) == Directive::Never {
                                             debug!("not summing (deep) special path {:?}", path);
                                             continue;
                                         }
@@ -198,7 +193,6 @@ impl DirSummer {
                                         busy.fetch_add(1, Ordering::Relaxed);
                                         dirs_sender.send(Some(path)).unwrap();
                                     } else {
-
                                         #[cfg(unix)]
                                         if md.nlink() > 1 {
                                             let mut nodes = nodes.lock().unwrap();
@@ -211,7 +205,6 @@ impl DirSummer {
                                                 continue;
                                             }
                                         }
-
                                     }
                                     thread_sum += md_sum(&md);
                                 } else {
@@ -252,24 +245,22 @@ impl DirSummer {
     }
 }
 
-
 /// compute the consolidated numbers for a directory, with implementation
 /// varying depending on the OS:
 /// On unix, the computation is done on blocks of 512 bytes
 /// see https://doc.rust-lang.org/std/os/unix/fs/trait.MetadataExt.html#tymethod.blocks
 pub fn compute_dir_sum(
     path: &Path,
-    cache: &mut AHashMap<PathBuf, FileSum>,
+    cache: &mut FxHashMap<PathBuf, FileSum>,
     dam: &Dam,
     con: &AppContext,
 ) -> Option<FileSum> {
     use once_cell::sync::OnceCell;
     static DIR_SUMMER: OnceCell<Mutex<DirSummer>> = OnceCell::new();
     DIR_SUMMER
-        .get_or_init(|| {
-            Mutex::new(DirSummer::new(con.file_sum_threads_count))
-        })
-        .lock().unwrap()
+        .get_or_init(|| Mutex::new(DirSummer::new(con.file_sum_threads_count)))
+        .lock()
+        .unwrap()
         .compute_dir_sum(path, cache, dam, con)
 }
 
@@ -316,7 +307,6 @@ fn extract_seconds(md: &fs::Metadata) -> u32 {
     }
     0
 }
-
 
 #[inline(always)]
 fn md_sum(md: &fs::Metadata) -> FileSum {
